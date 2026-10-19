@@ -12,6 +12,8 @@ export default [
         document: 'readonly',
         navigator: 'readonly',
         localStorage: 'readonly',
+        location: 'readonly',
+        URLSearchParams: 'readonly',
         fetch: 'readonly',
         FileReader: 'readonly',
         Blob: 'readonly',
@@ -39,6 +41,6 @@ export default [
   },
   {
     files: ['scripts/**/*.mjs'],
-    languageOptions: { ecmaVersion: 2022, sourceType: 'module', globals: { console: 'readonly', process: 'readonly' } }
+    languageOptions: { ecmaVersion: 2022, sourceType: 'module', globals: { console: 'readonly', process: 'readonly', setTimeout: 'readonly', clearTimeout: 'readonly' } }
   }
 ];

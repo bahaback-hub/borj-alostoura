@@ -170,6 +170,28 @@
         <p class="text-sm mt-1">يتم البحث في كل العقود — المفتوحة والمغلقة — وبطريقة متسامحة مع الهمزات والتاء المربوطة.</p>
       </div>
     </section>
+
+    <!-- ======================= بوابة الفنيين ======================= -->
+    <section id="techPortal" class="hidden fade-in">
+      <div class="card p-5 mb-5">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="sec-title mb-1"><i class="fa-solid fa-helmet-safety text-gold-400 me-2"></i>مهام التركيب</h2>
+            <p class="text-xs text-mist-400">كل العقود الجاهزة للتركيب — اضغط «تم الانتهاء من التركيب» أو «يحتاج بعض التشطيبات» ليصل التحديث فورًا إلى المدير والمشرف والمصممين.</p>
+          </div>
+          <div class="flex gap-2">
+            <button id="btnTechRefresh" class="btn-ghost !px-3"><i class="fa-solid fa-rotate-right"></i> تحديث</button>
+            <button id="btnTechExit" class="btn-ghost !px-3 !text-rose-300"><i class="fa-solid fa-right-from-bracket"></i> خروج</button>
+          </div>
+        </div>
+      </div>
+      <div id="techWrap" class="space-y-6"></div>
+      <div id="techEmpty" class="hidden text-center py-16 text-mist-400">
+        <i class="fa-solid fa-screwdriver-wrench text-5xl mb-4 text-ink-500"></i>
+        <p class="font-bold">لا توجد مهام تركيب حاليًا</p>
+        <p class="text-sm mt-1">ستظهر هنا العقود التي يُسندها مدير المستودع لفني التركيب.</p>
+      </div>
+    </section>
   </main>
 
   <footer class="max-w-7xl mx-auto px-4 py-8 text-center text-[11px] text-mist-500 border-t border-ink-800 mt-6">
@@ -258,7 +280,7 @@
       <h3 class="font-head font-extrabold mb-1"><i class="fa-solid fa-user-gear text-gold-400 me-2"></i>إسناد الطلب لفني تركيب</h3>
       <p id="as_contract" class="text-xs text-mist-400 mb-4">—</p>
       <form id="formAssign" class="space-y-4">
-        <div><label class="label">اسم الفني *</label><select id="as_tech" class="input"></select></div>
+        <div><label class="label">اسم الفني *</label><input id="as_tech" class="input" list="as_techList" placeholder="اكتب اسم الفني (أو اختر من المقترحات)"><datalist id="as_techList"></datalist></div>
         <div><label class="label">ملاحظة للفني</label><input id="as_note" class="input" placeholder="اختياري — مثل: التنسيق مع العميل مسبقًا"></div>
         <p class="text-[11px] text-mist-500">سيظهر للفني اسم العميل ورقم جواله وعنوانه مع زر تأكيد التركيب.</p>
         <div class="flex gap-2 pt-1">
@@ -333,7 +355,7 @@
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
           <div><label class="label">أسماء المصممين (اسم في كل سطر)</label><textarea id="sys_designers" rows="4" class="input text-sm"></textarea></div>
-          <div><label class="label">أسماء فنيي التركيب (اسم في كل سطر)</label><textarea id="sys_technicians" rows="4" class="input text-sm"></textarea></div>
+          <div><label class="label">أسماء الفنيين المقترحة (اختياري — اسم في كل سطر)</label><textarea id="sys_technicians" rows="4" class="input text-sm" placeholder="تُستخدم كاقتراحات فقط؛ يمكن كتابة اسم أي فني يدويًا عند الإسناد"></textarea></div>
           <div><label class="label">مدة الضمان (سنوات)</label><input id="sys_warranty" type="number" min="1" class="input num text-left" dir="ltr"></div>
           <div><label class="label">مهلة التسليم الافتراضية (يوم: 15–40)</label><input id="sys_delivery" type="number" min="15" max="40" class="input num text-left" dir="ltr"></div>
         </div>
@@ -357,6 +379,15 @@
         <button class="card p-5 hover:border-gold-500/50 transition group" data-orole="technician"><i class="fa-solid fa-screwdriver-wrench text-2xl text-gold-400 mb-2"></i><p class="font-bold text-sm">فني تركيب</p><p class="text-[11px] text-mist-500 mt-1">مهامي وتأكيد التركيب</p></button>
       </div>
       <div id="ob_persons" class="hidden grid-cols-2 gap-3"></div>
+      <div class="mt-6">
+        <button id="btnTechPortal" class="w-full card p-5 hover:border-gold-500/50 transition flex items-center justify-center gap-3 border-dashed">
+          <i class="fa-solid fa-helmet-safety text-2xl text-gold-400"></i>
+          <span class="text-start">
+            <span class="font-bold text-sm block">بوابة الفنيين — دخول التركيب</span>
+            <span class="text-[11px] text-mist-500">للفنيين فقط: عرض مهام التركيب وتأكيد إتمام العمل (بلا حساب)</span>
+          </span>
+        </button>
+      </div>
     </div>
   </div>
 

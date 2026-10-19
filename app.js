@@ -30,6 +30,18 @@ const ROLE_DEFS = {
 };
 
 const STORE = { cfg: 'borj_cfg_v1', role: 'borj_role_v1', demo: 'borj_demo_v1', cache: 'borj_cache_v1' };
+
+/* ---------------------------------------------------------------------------
+   بوابة الفنيين: رمز كتابة مشترك يُستخدم عند دخول الفني بلا هوية.
+   ⚠️ تنبيه أمني: هذا الرمز يُوضع داخل ملف منشور علنًا على GitHub Pages، لذا قد
+   يستخرجه أي شخص يستطيع الكتابة في المستودع. أنشئ رمزًا Fine-grained مقصورًا على
+   مستودع borj-alostoura فقط وبصلاحية Contents: Read & Write، ولا تستخدم رمزًا
+   واسع الصلاحيات. عند تركه كما هو (placeholder) تعمل البوابة في الوضع التجريبي
+   (حفظ محلي فقط دون رفع إلى GitHub).
+   --------------------------------------------------------------------------- */
+const TECH_SHARED_TOKEN = 'PUT_YOUR_FINE_GRAINED_PAT_HERE';
+const TECH_OWNER = 'bahaback-hub';
+const TECH_REPO = 'borj-alostoura';
 const MAX_UPLOAD_BYTES = 900 * 1024; // حد الرفع المباشر إلى GitHub Contents API
 // GitHub Contents API يرفض الملفات الكبيرة (>~1MB عبر هذا المسار)، ولأن ملف البيانات
 // يُقرأ ويُكتب بالكامل في كل عملية فنحذّر عند الاقتراب من الحد لتفادي فقدان الحفظ.
@@ -75,6 +87,7 @@ const S = {
   tab: 'contracts',
   curId: null,             // العقد المفتوح في نافذة التفاصيل
   confirmResolve: null,
+  techPortal: false,       // true عند الدخول من بوابة الفنيين (بلا هوية)
   filters: { q: '', stage: '', designer: '' }
 };
 
@@ -91,11 +104,12 @@ const canLogistics = () => ['supervisor', 'warehouse'].includes(S.role);
 const canClose = () => isSupervisor();
 const canTicket = () => ['supervisor', 'warehouse', 'technician'].includes(S.role);
 const canUploadDrawing = (c) => isSupervisor() || paidOf(c) >= (c.payment?.total || 0);
-const techOwn = (c) => S.role === 'technician' && (c.technician?.name === S.person);
+// مدير التركيب (البوابة) يرى كل العقود المسندة؛ الفني العادي (بدور technician واسم) يرى ما أُسند له فقط.
+const techOwn = (c) => !!c.technician && (S.techPortal || (S.role === 'technician' && c.technician?.name === S.person));
 
 const paidOf = (c) => (c.payment?.log || []).reduce((s, p) => s + (+p.amount || 0), 0);
 const remainingOf = (c) => Math.max(0, (c.payment?.total || 0) - paidOf(c));
-const byName = () => `${ROLE_DEFS[S.role]?.label || S.role}${S.person ? ' — ' + S.person : ''}`;
+const byName = () => S.techPortal ? 'فني تركيب (بوابة الفنيين)' : `${ROLE_DEFS[S.role]?.label || S.role}${S.person ? ' — ' + S.person : ''}`;
 
 /* =====================================================================
    طبقة GitHub API (قاعدة البيانات)
@@ -247,8 +261,8 @@ async function saveData(mutator, commitMsg) {
 const FALLBACK_SEED = () => ({
   meta: { system: 'منظومة برج الأسطورة', version: 1, lastUpdated: nowISO(), nextNumber: 1, nextTicket: 1 },
   settings: {
-    designers: ['م. أحمد الغامدي', 'م. فيصل العنزي', 'م. عمر الحارثي', 'م. يوسف الزهراني'],
-    technicians: ['سالم القحطاني', 'نواف الدوسري', 'بندر الشمري', 'تركي المطيري'],
+    designers: ['أبو جمال', 'أبو يزن', 'علاء', 'خالد'],
+    technicians: [],
     warrantyYears: 15, defaultDeliveryDays: 30, shippingDays: 10,
     city: 'المدينة المنورة', factory: 'القصيم'
   },
@@ -741,20 +755,25 @@ function renderNewTab() {
 }
 
 /* ---------------------- العرض الكامل ---------------------- */
-function renderHeader() {
+function renderModeBadge() {
   const badge = $('#modeBadge');
+  if (!badge) return;
   if (S.mode === 'github') badge.outerHTML = `<span id="modeBadge" class="chip bg-emerald-500/15 text-emerald-300 border-emerald-400/20"><i class="fa-brands fa-github"></i> متصل: ${esc(S.cfg.owner)}/${esc(S.cfg.repo)}</span>`;
   else if (S.mode === 'offline') badge.outerHTML = `<span id="modeBadge" class="chip bg-amber-500/15 text-amber-300 border-amber-400/20"><i class="fa-solid fa-triangle-exclamation"></i> غير متصل — نسخة مؤقتة (قراءة فقط)</span>`;
   else badge.outerHTML = `<span id="modeBadge" class="chip bg-gold-500/15 text-gold-300 border-gold-400/20"><i class="fa-solid fa-flask"></i> وضع تجريبي محلي</span>`;
+}
 
+function renderHeader() {
+  renderModeBadge();
   const chip = $('#identityChip');
-  if (S.role) {
+  if (S.role && !S.techPortal) {
     chip.classList.remove('hidden');
     chip.innerHTML = `<i class="fa-solid ${ROLE_DEFS[S.role].icon}"></i> ${ROLE_DEFS[S.role].label}${S.person ? ' — ' + esc(S.person) : ''}`;
-  } else chip.classList.add('hidden');
+  } else if (!S.techPortal) chip.classList.add('hidden');
 }
 
 function renderAll() {
+  if (S.techPortal) { renderTechPortal(); return; }
   renderHeader();
   renderStats();
   renderContracts();
@@ -775,6 +794,118 @@ function switchTab(name) {
     $('#tab-' + t).classList.toggle('fade-in', t === name);
   });
   if (name === 'maintenance') $('#mSearch').focus();
+}
+
+/* =====================================================================
+   بوابة الفنيين — واجهة مستقلّة بلا هوية ولا كلمة مرور
+   تُعرض كل العقود قيد التركيب، ومعها رسمة المصنع وبيانات العميل والموعد.
+   ===================================================================== */
+function techTokenReady() { return TECH_SHARED_TOKEN && TECH_SHARED_TOKEN !== 'PUT_YOUR_FINE_GRAINED_PAT_HERE'; }
+
+function enterTechnicianPortal() {
+  S.techPortal = true;
+  S.role = 'technician';
+  S.person = '';
+  closeOnboard();
+  // تهيئة اتصال الكتابة للفني: رمز مشترك عندما يكون مضبوطًا، وإلا وضع تجريبي محلي.
+  if (techTokenReady()) {
+    S.cfg = { owner: TECH_OWNER, repo: TECH_REPO, branch: 'main', path: 'data/contracts.json', token: TECH_SHARED_TOKEN };
+  } else {
+    S.cfg = { owner: '', repo: '', branch: 'main', path: 'data/contracts.json', token: '' };
+  }
+  loadData().then(() => { applyPortalChrome(); renderTechPortal(); });
+  applyPortalChrome();
+  renderTechPortal();
+  toast(techTokenReady() ? 'مرحبًا بك في بوابة الفنيين — أي تأكيد يُحدَّث فورًا في المستودع.' : 'بوابة الفنيين (وضع تجريبي) — لم يُضبط رمز الفنيين بعد، لذا يُحفظ محليًا فقط.', techTokenReady() ? 'ok' : 'warn');
+}
+
+function exitTechnicianPortal() {
+  S.techPortal = false;
+  S.role = null; S.person = '';
+  LS.set(STORE.role, null);
+  S.cfg = LS.get(STORE.cfg, { owner: '', repo: '', branch: 'main', path: 'data/contracts.json', token: '' });
+  applyPortalChrome();
+  switchTab(S.tab || 'contracts');   // أعِد إظهار التبويب النشط بعد إخفاء البوابة
+  loadData().then(() => renderAll());
+  openOnboard('role');
+}
+
+/** إظهار/إخفاء عناصر الواجهة حسب كوننا داخل بوابة الفنيين. */
+function applyPortalChrome() {
+  const on = S.techPortal;
+  const headerNav = document.querySelector('header nav');
+  if (headerNav) headerNav.classList.toggle('hidden', on);
+  ['#roleSel', '#personSel', '#btnSettings', '#btnSwitch'].forEach(s => { const el = $(s); if (el) el.classList.toggle('hidden', on); });
+  ['#tab-contracts', '#tab-new', '#tab-warehouse', '#tab-maintenance'].forEach(s => { const el = $(s); if (el) el.classList.toggle('hidden', on); });
+  const portal = $('#techPortal');
+  if (portal) portal.classList.toggle('hidden', !on);
+  const chip = $('#identityChip');
+  if (chip) {
+    if (on) { chip.classList.remove('hidden'); chip.innerHTML = '<i class="fa-solid fa-screwdriver-wrench"></i> بوابة الفنيين'; }
+  }
+}
+
+function techDeadlineLine(c) {
+  const dl = c.drawing?.deadline;
+  const ship = c.shipping?.startedAt;
+  const parts = [];
+  if (dl) parts.push(`مهلة التسليم: <b class="num">${fmtDate(dl)}</b>`);
+  if (ship) parts.push(`بدأ الشحن: <b class="num">${fmtDate(ship)}</b>`);
+  return parts.length ? parts.join(' • ') : 'لم تُحدَّد مهلة بعد.';
+}
+
+function techCard(c) {
+  const drawing = c.drawing
+    ? (c.drawing.url
+        ? `<a href="${esc(c.drawing.url)}" target="_blank" rel="noopener" class="chip border-gold-500/30 bg-gold-500/10 text-gold-300 hover:brightness-125"><i class="fa-solid fa-file-arrow-down"></i> ${esc(c.drawing.name || 'رسمة المصنع')}</a>`
+        : `<span class="chip border-ink-600 bg-ink-800 text-mist-200"><i class="fa-solid fa-file"></i> ${esc(c.drawing.name || 'مرفوعة')}</span>`)
+    : '<span class="chip border-rose-400/20 bg-rose-500/10 text-rose-300"><i class="fa-solid fa-circle-exclamation"></i> لم تُرفع الرسمة بعد</span>';
+  return `
+  <div class="card p-5">
+    <div class="flex flex-wrap items-center gap-2 mb-3">
+      <span class="chip border-ink-500 bg-ink-700 text-mist-200 num"><i class="fa-solid fa-hashtag"></i> ${esc(c.id)}</span>
+      ${stageChip(c.stage)}
+      ${c.technician?.name ? `<span class="chip border-orange-400/20 bg-orange-500/10 text-orange-300"><i class="fa-solid fa-user-gear"></i> ${esc(c.technician.name)}</span>` : ''}
+      ${countdownHTML(c)}
+    </div>
+    <h3 class="font-head font-extrabold text-lg mb-1"><i class="fa-regular fa-user text-mist-500 me-2 text-sm"></i>${esc(c.customer?.name)}</h3>
+    <p class="text-sm text-mist-400 mb-3"><i class="fa-solid fa-location-dot me-1.5 text-mist-500"></i>${esc(c.customer?.address || '—')}</p>
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs mb-3">
+      <div class="bg-ink-800/70 rounded-xl px-3 py-2"><span class="text-mist-500 block">الجوال</span><a href="tel:${esc(c.customer?.phone)}" dir="ltr" class="num text-mist-100 font-bold text-left block">${esc(c.customer?.phone || '—')}</a></div>
+      <div class="bg-ink-800/70 rounded-xl px-3 py-2 sm:col-span-2"><span class="text-mist-500 block">الموعد / المهلة</span><span class="text-mist-100 font-bold">${techDeadlineLine(c)}</span></div>
+    </div>
+    <div class="flex flex-wrap items-center gap-2 mb-4">
+      <span class="text-mist-500 text-xs">رسمة المصنع:</span> ${drawing}
+    </div>
+    <div class="flex flex-wrap gap-2">
+      ${['assigned', 'needs_finishing'].includes(c.stage) ? `
+        <button class="btn-emerald !py-2 !px-3 text-xs" data-act="installDone" data-id="${c.id}"><i class="fa-solid fa-circle-check"></i> تم الانتهاء من التركيب</button>
+        <button class="btn-ghost !py-2 !px-3 text-xs !text-yellow-300" data-act="needsFinishing" data-id="${c.id}"><i class="fa-solid fa-paint-roller"></i> يحتاج بعض التشطيبات</button>
+      ` : `<span class="chip border-lime-400/20 bg-lime-500/10 text-lime-300"><i class="fa-solid fa-clipboard-check"></i> تم التركيب — بانتظار اعتماد المشرف</span>`}
+      <button class="btn-ghost !py-2 !px-3 text-xs" data-act="openDetails" data-id="${c.id}"><i class="fa-solid fa-file-lines"></i> التفاصيل</button>
+    </div>
+  </div>`;
+}
+
+function renderTechPortal() {
+  const wrap = $('#techWrap');
+  if (!wrap) return;
+  renderModeBadge();
+  const chip = $('#identityChip');
+  if (chip) { chip.classList.remove('hidden'); chip.innerHTML = '<i class="fa-solid fa-screwdriver-wrench"></i> بوابة الفنيين'; }
+  const cs = (S.data?.contracts || []).filter(c => techOwn(c) && ['assigned', 'needs_finishing', 'installation_done'].includes(c.stage));
+  if (!cs.length) {
+    wrap.innerHTML = '';
+    const empty = $('#techEmpty'); if (empty) empty.classList.remove('hidden');
+    return;
+  }
+  const empty = $('#techEmpty'); if (empty) empty.classList.add('hidden');
+  const pending = cs.filter(c => ['assigned', 'needs_finishing'].includes(c.stage));
+  const done = cs.filter(c => c.stage === 'installation_done');
+  let html = '';
+  if (pending.length) html += `<h3 class="sec-title mb-3"><i class="fa-solid fa-screwdriver-wrench text-gold-400 me-2"></i>مهام قيد التركيب (${pending.length})</h3><div class="grid grid-cols-1 xl:grid-cols-2 gap-5 mb-6">${pending.map(techCard).join('')}</div>`;
+  if (done.length) html += `<h3 class="sec-title mb-3"><i class="fa-solid fa-clipboard-check text-lime-400 me-2"></i>تم تركيبها — بانتظار الاعتماد (${done.length})</h3><div class="grid grid-cols-1 xl:grid-cols-2 gap-5">${done.map(techCard).join('')}</div>`;
+  wrap.innerHTML = html;
 }
 
 /* =====================================================================
@@ -1063,10 +1194,27 @@ async function actArrive(id) {
 }
 
 /* ---------- إسناد فني ---------- */
+/** أسماء الفنيين المقترحة: الأسماء المُسندة سابقًا في العقود + أسماء الإعدادات (بلا تكرار). */
+function technicianSuggestions() {
+  const seen = new Set();
+  const out = [];
+  for (const c of (S.data?.contracts || [])) {
+    const n = c.technician?.name?.trim();
+    if (n && !seen.has(n)) { seen.add(n); out.push(n); }
+  }
+  for (const t of (S.data?.settings?.technicians || [])) {
+    const n = String(t || '').trim();
+    if (n && !seen.has(n)) { seen.add(n); out.push(n); }
+  }
+  return out;
+}
+
 function actOpenAssign(id) {
   const c = findContract(id); if (!c || !canLogistics()) return;
   $('#as_contract').innerHTML = `العقد <b class="num">${esc(c.id)}</b> — ${esc(c.customer?.name)} • ${esc(c.customer?.address || '')}`;
-  $('#as_tech').innerHTML = (S.data?.settings?.technicians || []).map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('');
+  const dl = $('#as_techList');
+  if (dl) dl.innerHTML = technicianSuggestions().map(t => `<option value="${esc(t)}"></option>`).join('');
+  $('#as_tech').value = c.technician?.name || '';
   $('#as_note').value = '';
   $('#formAssign').dataset.id = c.id;
   openModal('m-assign');
@@ -1076,9 +1224,9 @@ async function actSubmitAssign(e) {
   e.preventDefault();
   const id = e.target.dataset.id;
   const c = findContract(id); if (!c || !canLogistics()) return;
-  const tech = $('#as_tech').value;
+  const tech = $('#as_tech').value.trim();
   const note = $('#as_note').value.trim();
-  if (!tech) return toast('اختر اسم الفني (أضف الفنيين من الإعدادات إن كانت القائمة فارغة).', 'err');
+  if (!tech) return toast('اكتب اسم الفني المسؤول.', 'err');
   busy(true, 'جارٍ الإسناد…');
   try {
     await saveData((data) => {
@@ -1322,7 +1470,7 @@ async function actSaveSys() {
   const technicians = $('#sys_technicians').value.split('\n').map(s => s.trim()).filter(Boolean);
   const warrantyYears = Math.max(1, +$('#sys_warranty').value || 15);
   const defaultDeliveryDays = Math.min(40, Math.max(15, +$('#sys_delivery').value || 30));
-  if (!designers.length || !technicians.length) return toast('يجب إدخال اسم مصمم واحد وفني واحد على الأقل.', 'err');
+  if (!designers.length) return toast('يجب إدخال اسم مصمم واحد على الأقل.', 'err');
   busy(true, 'جارٍ حفظ إعدادات المنظومة…');
   try {
     await saveData((data) => {
@@ -1376,6 +1524,13 @@ function bindEvents() {
     }
     const operson = e.target.closest('[data-operson]');
     if (operson) { closeOnboard(); setIdentity(S.obRole, operson.dataset.operson); return; }
+
+    if (e.target.closest('#btnTechPortal')) { enterTechnicianPortal(); return; }
+    if (e.target.closest('#btnTechExit')) { exitTechnicianPortal(); return; }
+    if (e.target.closest('#btnTechRefresh')) {
+      loadData(true).then(() => { renderTechPortal(); toast(S.mode === 'github' ? 'تم جلب أحدث البيانات من المستودع.' : 'تم تحديث البيانات المحلية.', S.mode === 'offline' ? 'warn' : 'info'); });
+      return;
+    }
 
     const act = e.target.closest('[data-act]');
     if (!act || act.disabled) return;
@@ -1474,6 +1629,9 @@ function bindEvents() {
 (async function init() {
   S.cfg = LS.get(STORE.cfg, S.cfg);
   bindEvents();
+  // رابط مختصر لبوابة الفنيين: افتح الموقع مع ?tech=1 للدخول المباشر.
+  const wantTech = new URLSearchParams(location.search).get('tech') === '1';
+  if (wantTech) { enterTechnicianPortal(); return; }
   await loadData();
   const id = LS.get(STORE.role, null);
   if (id?.role) setIdentity(id.role, id.person || '', { silent: true });

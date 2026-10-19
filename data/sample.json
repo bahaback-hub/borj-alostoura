@@ -7,8 +7,8 @@
     "nextTicket": 2
   },
   "settings": {
-    "designers": ["م. أحمد الغامدي", "م. فيصل العنزي", "م. عمر الحارثي", "م. يوسف الزهراني"],
-    "technicians": ["سالم القحطاني", "نواف الدوسري", "بندر الشمري", "تركي المطيري"],
+    "designers": ["أبو جمال", "أبو يزن", "علاء", "خالد"],
+    "technicians": [],
     "warrantyYears": 15,
     "defaultDeliveryDays": 30,
     "shippingDays": 10,
