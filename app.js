@@ -1,0 +1,1484 @@
+/* =====================================================================
+   منظومة برج الأسطورة — app.js
+   تطبيق ويب ثابت (GitHub Pages) يستخدم GitHub API كقاعدة بيانات
+   عبر قراءة/تحديث ملف data/contracts.json داخل المستودع.
+   ===================================================================== */
+'use strict';
+
+/* ------------------------------ ثوابت الحالات ------------------------------ */
+const STAGES = {
+  new:                { label: 'عقد جديد — بانتظار دفع العربون', chip: 'bg-slate-500/15 text-slate-300 border-slate-400/20',  icon: 'fa-file-circle-plus' },
+  deposit_paid:       { label: 'تم دفع العربون — بانتظار استكمال السداد', chip: 'bg-amber-500/15 text-amber-300 border-amber-400/20', icon: 'fa-hourglass-half' },
+  fully_paid:         { label: 'مسدد بالكامل — بانتظار رفع رسمة المصنع', chip: 'bg-sky-500/15 text-sky-300 border-sky-400/20', icon: 'fa-circle-check' },
+  in_production:      { label: 'قيد التصنيع في مصنع القصيم', chip: 'bg-indigo-500/15 text-indigo-300 border-indigo-400/20', icon: 'fa-industry' },
+  shipping:           { label: 'قيد الشحن إلى المدينة المنورة', chip: 'bg-violet-500/15 text-violet-300 border-violet-400/20', icon: 'fa-truck-fast' },
+  arrived_warehouse:  { label: 'وصل مستودع المدينة — بانتظار الإسناد', chip: 'bg-cyan-500/15 text-cyan-300 border-cyan-400/20', icon: 'fa-warehouse' },
+  assigned:           { label: 'مسند لفني — قيد التركيب', chip: 'bg-orange-500/15 text-orange-300 border-orange-400/20', icon: 'fa-screwdriver-wrench' },
+  needs_finishing:    { label: 'تم التركيب — يحتاج بعض التشطيبات', chip: 'bg-yellow-500/15 text-yellow-300 border-yellow-400/20', icon: 'fa-paint-roller' },
+  installation_done:  { label: 'تم التركيب — بانتظار اعتماد المشرف', chip: 'bg-lime-500/15 text-lime-300 border-lime-400/20', icon: 'fa-clipboard-check' },
+  completed:          { label: 'مكتمل وملفه مغلق — تحت الضمان', chip: 'bg-emerald-500/15 text-emerald-300 border-emerald-400/20', icon: 'fa-shield-halved' }
+};
+
+const STEP_ORDER = ['new','deposit_paid','fully_paid','in_production','shipping','arrived_warehouse','assigned','installation_done','completed'];
+const STEP_NAMES = ['العقد','العربون','السداد الكامل','الرسمة/التصنيع','الشحن','المستودع','التركيب','الاعتماد'];
+
+const ROLE_DEFS = {
+  supervisor: { label: 'المدير العام / المشرف', icon: 'fa-user-shield' },
+  designer:   { label: 'مصمم', icon: 'fa-pen-ruler' },
+  warehouse:  { label: 'مدير المستودع', icon: 'fa-warehouse' },
+  technician: { label: 'فني تركيب', icon: 'fa-screwdriver-wrench' }
+};
+
+const STORE = { cfg: 'borj_cfg_v1', role: 'borj_role_v1', demo: 'borj_demo_v1', cache: 'borj_cache_v1' };
+const MAX_UPLOAD_BYTES = 900 * 1024; // حد الرفع المباشر إلى GitHub Contents API
+// GitHub Contents API يرفض الملفات الكبيرة (>~1MB عبر هذا المسار)، ولأن ملف البيانات
+// يُقرأ ويُكتب بالكامل في كل عملية فنحذّر عند الاقتراب من الحد لتفادي فقدان الحفظ.
+const MAX_DATA_BYTES = 850 * 1024;
+const WARN_DATA_BYTES = 700 * 1024;
+
+/* --------------------------------- أدوات --------------------------------- */
+const $  = (s) => document.querySelector(s);
+const $$ = (s) => Array.from(document.querySelectorAll(s));
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+const fmtMoney = (n) => new Intl.NumberFormat('en-US').format(Math.round(+n || 0)) + ' ر.س';
+const fmtNum = (n) => new Intl.NumberFormat('en-US').format(+n || 0);
+const fmtDate = (iso) => {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleDateString('ar-SA-u-ca-gregory-nu-latn', { day: '2-digit', month: 'long', year: 'numeric' });
+  } catch { return String(iso).slice(0, 10); }
+};
+const fmtDateTime = (iso) => {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    return fmtDate(iso) + ' — ' + d.toLocaleTimeString('ar-SA-u-nu-latn', { hour: '2-digit', minute: '2-digit' });
+  } catch { return String(iso).slice(0, 16); }
+};
+const nowISO = () => new Date().toISOString();
+const normAr = (s) => String(s || '')
+  .replace(/[\u064B-\u0652\u0640]/g, '')
+  .replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي')
+  .replace(/[^\u0600-\u06FFa-zA-Z0-9]/g, '').toLowerCase();
+const digitsOnly = (s) => String(s || '').replace(/\D/g, '');
+const isValidSaudiPhone = (s) => /^(?:9665|05|5)\d{8}$/.test(digitsOnly(s));
+const addDays = (iso, days) => new Date(new Date(iso).getTime() + days * 864e5).toISOString();
+const addYears = (iso, y) => { const d = new Date(iso); d.setFullYear(d.getFullYear() + y); return d.toISOString(); };
+const daysBetween = (a, b) => Math.round((new Date(b) - new Date(a)) / 864e5);
+
+/* --------------------------------- الحالة --------------------------------- */
+const S = {
+  cfg: { owner: '', repo: '', branch: 'main', path: 'data/contracts.json', token: '' },
+  role: null, person: '',
+  data: null, sha: null, etag: null,
+  mode: 'demo',            // demo | github | offline
+  tab: 'contracts',
+  curId: null,             // العقد المفتوح في نافذة التفاصيل
+  confirmResolve: null,
+  filters: { q: '', stage: '', designer: '' }
+};
+
+const LS = {
+  get(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v === null || v === undefined ? d : v; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+};
+
+/* ------------------------- صلاحيات (الأدوار) ------------------------- */
+const isSupervisor = () => S.role === 'supervisor';
+const canPay = () => ['supervisor', 'designer'].includes(S.role);
+const canCreate = () => ['supervisor', 'designer'].includes(S.role);
+const canLogistics = () => ['supervisor', 'warehouse'].includes(S.role);
+const canClose = () => isSupervisor();
+const canTicket = () => ['supervisor', 'warehouse', 'technician'].includes(S.role);
+const canUploadDrawing = (c) => isSupervisor() || paidOf(c) >= (c.payment?.total || 0);
+const techOwn = (c) => S.role === 'technician' && (c.technician?.name === S.person);
+
+const paidOf = (c) => (c.payment?.log || []).reduce((s, p) => s + (+p.amount || 0), 0);
+const remainingOf = (c) => Math.max(0, (c.payment?.total || 0) - paidOf(c));
+const byName = () => `${ROLE_DEFS[S.role]?.label || S.role}${S.person ? ' — ' + S.person : ''}`;
+
+/* =====================================================================
+   طبقة GitHub API (قاعدة البيانات)
+   ===================================================================== */
+function ghCfgReady() { return !!(S.cfg.owner && S.cfg.repo && S.cfg.token); }
+
+function ghApiRaw(path, opts = {}) {
+  const url = `https://api.github.com/repos/${S.cfg.owner}/${S.cfg.repo}/${path}`;
+  return fetch(url, {
+    ...opts,
+    headers: {
+      'Accept': 'application/vnd.github+json',
+      'Authorization': `Bearer ${S.cfg.token}`,
+      'Content-Type': 'application/json',
+      ...(opts.headers || {})
+    }
+  });
+}
+
+function ghApi(path, opts = {}) {
+  return ghApiRaw(path, opts).then(async (res) => {
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      const err = new Error(`GitHub API ${res.status}`);
+      err.status = res.status; err.body = body;
+      throw err;
+    }
+    return res.json();
+  });
+}
+function b64ToUtf8(b64) {
+  const bin = atob(b64.replace(/\n/g, ''));
+  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  return new TextDecoder('utf-8').decode(bytes);
+}
+function utf8ToB64(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  const CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode(...bytes.subarray(i, i + CH));
+  return btoa(bin);
+}
+
+/** قراءة ملف البيانات من المستودع — تُعيد {data, sha} */
+async function ghLoadData() {
+  const p = `contents/${S.cfg.path}?ref=${encodeURIComponent(S.cfg.branch || 'main')}&t=${Date.now()}`;
+  const j = await ghApi(p);
+  const data = JSON.parse(b64ToUtf8(j.content || ''));
+  S.sha = j.sha;
+  S.etag = null; // نجبر طلبًا كاملًا في المرة القادمة بعد أي كتابة
+  return data;
+}
+
+/**
+ * قراءة مشروطة (If-None-Match) للتحديث التلقائي: إذا لم يتغيّر الملف يرد GitHub 304
+ * فلا نُهدر حصة الطلبات ولا نُعيد الرسم. تُعيد true إن تغيّر شيء وحُدّثت S.data.
+ */
+async function ghLoadDataIfChanged() {
+  const p = `contents/${S.cfg.path}?ref=${encodeURIComponent(S.cfg.branch || 'main')}`;
+  const headers = S.etag ? { 'If-None-Match': S.etag } : {};
+  const res = await ghApiRaw(p, { headers });
+  if (res.status === 304) return false;
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    const err = new Error(`GitHub API ${res.status}`);
+    err.status = res.status; err.body = body;
+    throw err;
+  }
+  const j = await res.json();
+  S.etag = res.headers.get('ETag') || null;
+  S.data = JSON.parse(b64ToUtf8(j.content || ''));
+  S.sha = j.sha;
+  LS.set(STORE.cache, { at: nowISO(), data: S.data });
+  return true;
+}
+
+/** كتابة ملف البيانات مع SHA الحالي (Commit) */
+async function ghPutData(data, message) {
+  const json = JSON.stringify(data, null, 2);
+  const bytes = new TextEncoder().encode(json).length;
+  if (bytes > MAX_DATA_BYTES) {
+    const err = new Error(`حجم ملف البيانات (${fmtNum(Math.round(bytes / 1024))} كيلوبايت) يتجاوز الحد المسموح (${fmtNum(Math.round(MAX_DATA_BYTES / 1024))} كيلوبايت) — أرشِف العقود القديمة أو انقل الرسمات إلى روابط خارجية.`);
+    err.code = 'DATA_TOO_LARGE';
+    throw err;
+  }
+  if (bytes > WARN_DATA_BYTES) {
+    toast(`تنبيه: ملف البيانات كبر (${fmtNum(Math.round(bytes / 1024))} كيلوبايت من أصل ${fmtNum(Math.round(MAX_DATA_BYTES / 1024))}). يُفضَّل أرشفة العقود المكتملة القديمة.`, 'warn');
+  }
+  const body = {
+    message: message + ' — عبر منظومة برج الأسطورة',
+    content: utf8ToB64(json),
+    branch: S.cfg.branch || 'main'
+  };
+  if (S.sha) body.sha = S.sha;
+  const j = await ghApi(`contents/${S.cfg.path}`, { method: 'PUT', body: JSON.stringify(body) });
+  S.sha = j.content?.sha || S.sha;
+  return j;
+}
+
+/** رفع ملف رسمة إلى مجلد drawings/ داخل المستودع — تُعيد رابط التحميل */
+async function ghUploadDrawing(fileName, base64Content, contractId) {
+  const j = await ghApi(`contents/drawings/${encodeURIComponent(fileName)}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      message: `رفع رسمة المصنع للعقد ${contractId} — منظومة برج الأسطورة`,
+      content: base64Content,
+      branch: S.cfg.branch || 'main'
+    })
+  });
+  return j.content?.download_url || '';
+}
+
+/**
+ * الحفظ الآمن: قراءة حديثة → تعديل → كتابة (مع إعادة المحاولة عند التعارض)
+ * mutator: دالة تعدّل كائن البيانات في مكانها.
+ */
+async function saveData(mutator, commitMsg) {
+  if (S.mode === 'github' && ghCfgReady()) {
+    let lastErr = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const fresh = await ghLoadData();          // جلب أحدث نسخة + SHA
+        mutator(fresh);
+        fresh.meta = fresh.meta || {};
+        fresh.meta.lastUpdated = nowISO();
+        await ghPutData(fresh, commitMsg);
+        S.data = fresh;
+        LS.set(STORE.cache, { at: nowISO(), data: fresh }); // نسخة احتياطية محلية
+        return;
+      } catch (e) {
+        lastErr = e;
+        if (e.status === 409 || e.status === 422) continue; // تعارض تعديلات متزامنة
+        throw e;
+      }
+    }
+    throw lastErr || new Error('تعذر الحفظ');
+  } else if (S.mode === 'github') {
+    throw new Error('الوضع غير مكتمل');
+  } else {
+    // الوضع التجريبي المحلي
+    mutator(S.data);
+    S.data.meta = S.data.meta || {};
+    S.data.meta.lastUpdated = nowISO();
+    LS.set(STORE.demo, S.data);
+  }
+}
+
+/* ---------------------------- تحميل البيانات ---------------------------- */
+const FALLBACK_SEED = () => ({
+  meta: { system: 'منظومة برج الأسطورة', version: 1, lastUpdated: nowISO(), nextNumber: 1, nextTicket: 1 },
+  settings: {
+    designers: ['م. أحمد الغامدي', 'م. فيصل العنزي', 'م. عمر الحارثي', 'م. يوسف الزهراني'],
+    technicians: ['سالم القحطاني', 'نواف الدوسري', 'بندر الشمري', 'تركي المطيري'],
+    warrantyYears: 15, defaultDeliveryDays: 30, shippingDays: 10,
+    city: 'المدينة المنورة', factory: 'القصيم'
+  },
+  // لا نُدرج عقدًا وهميًا: ملف البيانات الفعلي يجب أن يبدأ فارغًا. البيانات التجريبية
+  // للعرض في data/sample.json ويستطيع المستخدم نسخها يدويًا عند الحاجة.
+  contracts: []
+});
+
+async function fetchLocalSeed() {
+  try {
+    const res = await fetch(S.cfg.path || 'data/contracts.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error('fetch failed');
+    return await res.json();
+  } catch { return null; }
+}
+
+async function loadData(silent = false) {
+  if (!silent) busy(true, 'جارٍ تحميل البيانات…');
+  try {
+    if (ghCfgReady()) {
+      S.mode = 'github';
+      try {
+        const data = await ghLoadData();
+        S.data = data;
+        LS.set(STORE.cache, { at: nowISO(), data });
+      } catch {
+        const cached = LS.get(STORE.cache, null);
+        if (cached?.data) {
+          S.data = cached.data; S.mode = 'offline';
+          if (!silent) toast('تعذر الاتصال بـ GitHub — يتم عرض نسخة محفوظة مؤقتًا (القراءة فقط).', 'warn');
+        } else {
+          S.data = await fetchLocalSeed() || FALLBACK_SEED();
+          S.mode = 'demo';
+          if (!silent) toast('تعذر الاتصال بـ GitHub — تحقق من الإعدادات. تم التبديل للوضع التجريبي.', 'warn');
+        }
+      }
+    } else {
+      S.mode = 'demo';
+      S.data = LS.get(STORE.demo, null) || await fetchLocalSeed() || FALLBACK_SEED();
+      LS.set(STORE.demo, S.data);
+    }
+  } finally {
+    if (!silent) busy(false);
+  }
+}
+
+/* =====================================================================
+   محركات العرض (Rendering)
+   ===================================================================== */
+function stageChip(stage, extra = '') {
+  const st = STAGES[stage] || STAGES.new;
+  return `<span class="chip ${st.chip} ${extra}"><i class="fa-solid ${st.icon}"></i> ${esc(st.label)}</span>`;
+}
+
+function countdownHTML(c) {
+  const dl = c.drawing?.deadline;
+  if (!dl || ['completed'].includes(c.stage)) return '';
+  const left = Math.ceil((new Date(dl) - Date.now()) / 864e5);
+  if (!Number.isFinite(left)) return ''; // تاريخ غير صالح — لا نعرض عدّادًا مضلّلًا
+  let cls = 'bg-emerald-500/15 text-emerald-300 border-emerald-400/20', txt = `متبقٍ ${left} يوم من مهلة التسليم`;
+  if (left <= 0) { cls = 'bg-rose-500/15 text-rose-300 border-rose-400/20'; txt = `انتهت المهلة بـ ${Math.abs(left)} يوم`; }
+  else if (left <= 5) { cls = 'bg-rose-500/15 text-rose-300 border-rose-400/20'; }
+  else if (left <= 10) { cls = 'bg-amber-500/15 text-amber-300 border-amber-400/20'; }
+  return `<span class="chip num ${cls}"><i class="fa-solid fa-stopwatch"></i> ${txt}</span>`;
+}
+
+/** نسبة تقدّم مهلة التسليم (0–100) لرسمة العقد — آمنة ضد التواريخ الناقصة/غير الصالحة. */
+function drawingProgress(c) {
+  const dl = c.drawing?.deadline;
+  const up = c.drawing?.uploadedAt;
+  if (!dl || !up) return 0;
+  const total = daysBetween(up, dl);
+  if (!Number.isFinite(total) || total <= 0) return 0;
+  const elapsed = daysBetween(up, nowISO());
+  if (!Number.isFinite(elapsed)) return 0;
+  return Math.min(100, Math.max(0, Math.round((elapsed / total) * 100)));
+}
+
+function warrantyChip(c) {
+  if (c.stage !== 'completed' || !c.warranty?.until) return '';
+  const active = new Date(c.warranty.until) > new Date();
+  return active
+    ? `<span class="chip bg-emerald-500/15 text-emerald-300 border-emerald-400/20"><i class="fa-solid fa-shield-halved"></i> ضمان حتى ${fmtDate(c.warranty.until)}</span>`
+    : `<span class="chip bg-ink-700 text-mist-400 border-ink-600"><i class="fa-solid fa-shield-halved"></i> انتهى الضمان</span>`;
+}
+
+/* ---------------------- شريط الإحصائيات ---------------------- */
+function renderStats() {
+  const cs = S.data?.contracts || [];
+  const groups = {
+    all: cs.length,
+    awaiting_pay: cs.filter(c => ['new', 'deposit_paid'].includes(c.stage)).length,
+    awaiting_drawing: cs.filter(c => c.stage === 'fully_paid').length,
+    production_shipping: cs.filter(c => ['in_production', 'shipping'].includes(c.stage)).length,
+    warehouse_install: cs.filter(c => ['arrived_warehouse', 'assigned', 'needs_finishing', 'installation_done'].includes(c.stage)).length,
+    completed: cs.filter(c => c.stage === 'completed').length
+  };
+  const cards = [
+    { k: 'all', t: 'إجمالي العقود', v: groups.all, i: 'fa-layer-group', c: 'text-mist-200' },
+    { k: 'awaiting_pay', t: 'بانتظار السداد', v: groups.awaiting_pay, i: 'fa-hourglass-half', c: 'text-amber-300' },
+    { k: 'awaiting_drawing', t: 'بانتظار الرسمة', v: groups.awaiting_drawing, i: 'fa-file-circle-plus', c: 'text-sky-300' },
+    { k: 'production_shipping', t: 'تصنيع وشحن', v: groups.production_shipping, i: 'fa-truck-fast', c: 'text-indigo-300' },
+    { k: 'warehouse_install', t: 'مستودع وتركيب', v: groups.warehouse_install, i: 'fa-boxes-stacked', c: 'text-cyan-300' },
+    { k: 'completed', t: 'مكتملة', v: groups.completed, i: 'fa-circle-check', c: 'text-emerald-300' }
+  ];
+  $('#statsRow').innerHTML = cards.map(x => `
+    <button class="card p-4 text-start hover:border-gold-500/40 transition ${S.filters.stage === x.k ? '!border-gold-500/60' : ''}" data-stat="${x.k}">
+      <div class="flex items-center justify-between mb-2"><i class="fa-solid ${x.i} ${x.c}"></i><span class="text-2xl font-head font-extrabold num ${x.c}">${x.v}</span></div>
+      <p class="text-[11px] text-mist-400 font-bold">${x.t}</p>
+    </button>`).join('');
+}
+
+/* ---------------------- كرت عقد ---------------------- */
+function primaryAction(c) {
+  const btn = (act, label, icon, cls = 'btn-gold', disabled = false, title = '') =>
+    `<button class="${cls} !py-2 !px-3 text-xs" data-act="${act}" data-id="${c.id}" ${disabled ? 'disabled title="' + title + '"' : ''}><i class="fa-solid ${icon}"></i> ${label}</button>`;
+
+  switch (c.stage) {
+    case 'new':
+    case 'deposit_paid':
+      return canPay() ? btn('openPay', 'تسجيل دفعة', 'fa-cash-register') : '';
+    case 'fully_paid':
+      return canPay()
+        ? (canUploadDrawing(c) ? btn('openDrawing', 'رفع رسمة المصنع', 'fa-file-import')
+                               : btn('openDrawing', 'رفع رسمة المصنع', 'fa-lock', 'btn-ghost', true, 'متاح بعد السداد الكامل فقط'))
+        : '';
+    case 'in_production':
+      return canLogistics() ? btn('startShipping', 'بدء الشحن من القصيم', 'fa-truck-fast', 'btn-sky') : '';
+    case 'shipping':
+      return canLogistics() ? btn('arrive', 'تم الوصول إلى مستودع المدينة', 'fa-warehouse', 'btn-emerald') : '';
+    case 'arrived_warehouse':
+      return canLogistics() ? btn('openAssign', 'إسناد لفني تركيب', 'fa-user-gear') : '';
+    case 'assigned':
+    case 'needs_finishing':
+      return (techOwn(c) || isSupervisor()) ? btn('openDetails', 'تحديث حالة التركيب', 'fa-screwdriver-wrench') : '';
+    case 'installation_done':
+      return canClose() ? btn('closeFile', 'اعتماد وإنهاء الملف', 'fa-flag-checkered', 'btn-emerald') : '';
+    case 'completed':
+      return canTicket() ? btn('openTicket', 'فتح تذكرة صيانة', 'fa-screwdriver-wrench', 'btn-ghost') : '';
+    default: return '';
+  }
+}
+
+function contractCard(c) {
+  const rem = remainingOf(c);
+  const mine = techOwn(c) || (S.role === 'designer' && c.designer === S.person);
+  return `
+  <div class="card p-5 ${mine ? '!border-gold-500/40' : ''}">
+    <div class="flex flex-wrap items-center gap-2 mb-3">
+      <span class="chip border-ink-500 bg-ink-700 text-mist-200 num"><i class="fa-solid fa-hashtag"></i> ${esc(c.id)}</span>
+      ${stageChip(c.stage)}
+      ${countdownHTML(c)}
+      ${warrantyChip(c)}
+      ${mine ? '<span class="chip border-gold-500/30 bg-gold-500/10 text-gold-300"><i class="fa-solid fa-thumbtack"></i> ملفك</span>' : ''}
+    </div>
+    <h3 class="font-head font-extrabold text-lg mb-1"><i class="fa-regular fa-user text-mist-500 me-2 text-sm"></i>${esc(c.customer?.name)}</h3>
+    <p class="text-sm text-mist-400 mb-3"><i class="fa-solid fa-location-dot me-1.5 text-mist-500"></i>${esc(c.customer?.address || '—')}</p>
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs mb-4">
+      <div class="bg-ink-800/70 rounded-xl px-3 py-2"><span class="text-mist-500 block">الجوال</span><a href="tel:${esc(c.customer?.phone)}" dir="ltr" class="num text-mist-100 font-bold text-left block">${esc(c.customer?.phone)}</a></div>
+      <div class="bg-ink-800/70 rounded-xl px-3 py-2"><span class="text-mist-500 block">المصمم</span><span class="font-bold">${esc(c.designer)}</span></div>
+      <div class="bg-ink-800/70 rounded-xl px-3 py-2"><span class="text-mist-500 block">الإجمالي</span><span class="num font-bold">${fmtMoney(c.payment?.total)}</span></div>
+      <div class="bg-ink-800/70 rounded-xl px-3 py-2"><span class="text-mist-500 block">المتبقي</span><span class="num font-bold ${rem > 0 ? 'text-gold-300' : 'text-emerald-300'}">${fmtMoney(rem)}</span></div>
+    </div>
+    ${c.technician?.name ? `<p class="text-xs text-mist-400 mb-3"><i class="fa-solid fa-user-gear me-1.5 text-mist-500"></i>الفني المسؤول: <b class="text-mist-200">${esc(c.technician.name)}</b></p>` : ''}
+    <div class="flex flex-wrap gap-2">
+      ${primaryAction(c)}
+      <button class="btn-ghost !py-2 !px-3 text-xs" data-act="openDetails" data-id="${c.id}"><i class="fa-solid fa-file-lines"></i> التفاصيل الكاملة</button>
+    </div>
+  </div>`;
+}
+
+function applyFilters(cs) {
+  const q = normAr(S.filters.q);
+  return cs.filter(c => {
+    if (S.filters.designer && c.designer !== S.filters.designer) return false;
+    const st = S.filters.stage;
+    if (st) {
+      if (st === 'awaiting_pay' && !['new', 'deposit_paid'].includes(c.stage)) return false;
+      else if (st === 'awaiting_drawing' && c.stage !== 'fully_paid') return false;
+      else if (st === 'production_shipping' && !['in_production', 'shipping'].includes(c.stage)) return false;
+      else if (st === 'warehouse_install' && !['arrived_warehouse', 'assigned', 'needs_finishing', 'installation_done'].includes(c.stage)) return false;
+      else if (st === 'completed' && c.stage !== 'completed') return false;
+    }
+    if (q) {
+      const hay = normAr([c.id, c.customer?.name, c.customer?.phone].join(' '));
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function renderContracts() {
+  const cs = applyFilters(S.data?.contracts || []);
+  cs.sort((a, b) => (STEP_ORDER.indexOf(a.stage) - STEP_ORDER.indexOf(b.stage)) || (b.createdAt > a.createdAt ? 1 : -1));
+  $('#contractsList').innerHTML = cs.map(contractCard).join('');
+  $('#contractsEmpty').classList.toggle('hidden', cs.length > 0);
+  $('#fltDesigner').innerHTML = '<option value="">كل المصممين</option>' +
+    (S.data?.settings?.designers || []).map(d => `<option value="${esc(d)}" ${S.filters.designer === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
+}
+
+/* ---------------------- المستودع واللوجستيات ---------------------- */
+function whSection(title, icon, cls, items, note = '') {
+  if (!items.length) return '';
+  return `
+  <div class="card p-5">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="sec-title"><i class="fa-solid ${icon} ${cls} me-2"></i>${title}</h3>
+      <span class="chip border-ink-600 bg-ink-800 text-mist-300 num">${items.length}</span>
+    </div>
+    ${note ? `<p class="text-[11px] text-mist-500 mb-3">${note}</p>` : ''}
+    <div class="space-y-3">${items.map(c => whItem(c)).join('')}</div>
+  </div>`;
+}
+
+function whItem(c) {
+  const isMine = techOwn(c);
+  const actions = [];
+  if (c.stage === 'shipping' && canLogistics())
+    actions.push(`<button class="btn-emerald !py-2 !px-3 text-xs" data-act="arrive" data-id="${c.id}"><i class="fa-solid fa-warehouse"></i> تم الوصول إلى مستودع المدينة</button>`);
+  if (c.stage === 'arrived_warehouse' && canLogistics())
+    actions.push(`<button class="btn-gold !py-2 !px-3 text-xs" data-act="openAssign" data-id="${c.id}"><i class="fa-solid fa-user-gear"></i> إسناد لفني تركيب</button>`);
+  if (['assigned', 'needs_finishing'].includes(c.stage) && (isMine || isSupervisor())) {
+    actions.push(`<button class="btn-emerald !py-2 !px-3 text-xs" data-act="installDone" data-id="${c.id}"><i class="fa-solid fa-circle-check"></i> تم الانتهاء من التركيب</button>`);
+    if (c.stage === 'assigned')
+      actions.push(`<button class="btn-ghost !py-2 !px-3 text-xs !text-yellow-300" data-act="needsFinishing" data-id="${c.id}"><i class="fa-solid fa-paint-roller"></i> يحتاج بعض التشطيبات</button>`);
+  }
+  if (c.stage === 'installation_done' && canClose())
+    actions.push(`<button class="btn-gold !py-2 !px-3 text-xs" data-act="closeFile" data-id="${c.id}"><i class="fa-solid fa-flag-checkered"></i> اعتماد وإنهاء الملف</button>`);
+  actions.push(`<button class="btn-ghost !py-2 !px-3 text-xs" data-act="openDetails" data-id="${c.id}"><i class="fa-solid fa-file-lines"></i> تفاصيل</button>`);
+
+  const customerLine = (isMine || S.role !== 'technician')
+    ? `<p class="text-xs text-mist-300 mt-1"><i class="fa-solid fa-phone me-1.5 text-mist-500"></i><a href="tel:${esc(c.customer?.phone)}" dir="ltr" class="num">${esc(c.customer?.phone)}</a> — ${esc(c.customer?.address || '')}</p>`
+    : '';
+
+  return `
+  <div class="bg-ink-800/70 border ${isMine ? 'border-gold-500/40' : 'border-ink-600'} rounded-xl p-4">
+    <div class="flex flex-wrap items-center gap-2 mb-1.5">
+      <span class="chip border-ink-500 bg-ink-700 text-mist-200 num">${esc(c.id)}</span>
+      ${stageChip(c.stage)}
+      ${countdownHTML(c)}
+      ${isMine ? '<span class="chip border-gold-500/30 bg-gold-500/10 text-gold-300"><i class="fa-solid fa-thumbtack"></i> مهمتك</span>' : ''}
+    </div>
+    <p class="font-bold text-sm">${esc(c.customer?.name)}</p>
+    ${customerLine}
+    ${c.technician?.name ? `<p class="text-[11px] text-mist-400 mt-1"><i class="fa-solid fa-user-gear me-1"></i>الفني: ${esc(c.technician.name)}</p>` : ''}
+    ${c.stage === 'shipping' ? '<p class="text-[11px] text-violet-300/80 mt-1"><i class="fa-solid fa-truck-fast me-1"></i>في الطريق من القصيم — الوصول المتوقع خلال ~10 أيام من بدء الشحن</p>' : ''}
+    <div class="flex flex-wrap gap-2 mt-3">${actions.join('')}</div>
+  </div>`;
+}
+
+function renderWarehouse() {
+  const cs = S.data?.contracts || [];
+  const wrap = $('#whWrap');
+  if (S.role === 'technician') {
+    const mine = cs.filter(c => techOwn(c) && ['assigned', 'needs_finishing', 'installation_done'].includes(c.stage));
+    $('#whIntro').classList.add('hidden');
+    wrap.innerHTML = whSection('مهام التركيب الخاصة بي', 'fa-screwdriver-wrench', 'text-gold-400', mine,
+      'تأكد من الاتصال بالعميل مسبقًا، وبعد إتمام العمل اضغط «تم الانتهاء من التركيب». في حال وجود أعمال إضافية اضغط «يحتاج بعض التشطيبات».');
+    wrap.classList.toggle('hidden', false);
+    $('#whEmpty').classList.toggle('hidden', mine.length > 0);
+    return;
+  }
+  $('#whIntro').classList.remove('hidden');
+  const shipping = cs.filter(c => c.stage === 'shipping');
+  const awaiting = cs.filter(c => c.stage === 'arrived_warehouse');
+  const assigned = cs.filter(c => ['assigned', 'needs_finishing'].includes(c.stage));
+  const installed = cs.filter(c => c.stage === 'installation_done');
+  let html = '';
+  html += whSection('قيد الشحن من القصيم إلى المدينة', 'fa-truck-fast', 'text-violet-300', shipping, 'يضغط مدير المستودع زر الوصول فور وصول الشحنة ليظهر التحديث فورًا أمام الجميع.');
+  html += whSection('وصلت المستودع — بانتظار الإسناد', 'fa-warehouse', 'text-cyan-300', awaiting);
+  html += whSection('مسندة للفنيين — قيد التركيب', 'fa-screwdriver-wrench', 'text-orange-300', assigned);
+  html += whSection('تم التركيب — بانتظار اعتماد المشرف', 'fa-flag-checkered', 'text-lime-300', installed, 'المدير العام فقط هو المخول بإنهاء ملف العميل نهائيًا.');
+  wrap.innerHTML = html;
+  const any = shipping.length + awaiting.length + assigned.length + installed.length;
+  $('#whEmpty').classList.toggle('hidden', any > 0);
+}
+
+/* ---------------------- البحث في الصيانة ---------------------- */
+function renderSearch() {
+  const q = normAr($('#mSearch').value);
+  const res = $('#mResults');
+  if (!q) { res.innerHTML = ''; $('#mHint').classList.remove('hidden'); return; }
+  const cs = (S.data?.contracts || []).filter(c => normAr([c.id, c.customer?.name, c.customer?.phone].join(' ')).includes(q));
+  $('#mHint').classList.toggle('hidden', true);
+  if (!cs.length) {
+    res.innerHTML = `<div class="card p-10 text-center text-mist-400"><i class="fa-regular fa-face-frown text-4xl mb-3 text-ink-500"></i><p class="font-bold">لا توجد نتائج مطابقة لـ «${esc($('#mSearch').value)}»</p><p class="text-xs mt-1">جرّب رقم الجوال أو رقم العقد أو جزءًا من الاسم.</p></div>`;
+    return;
+  }
+  res.innerHTML = cs.map(c => {
+    const tickets = c.maintenance || [];
+    return `
+    <div class="card p-5">
+      <div class="flex flex-wrap items-center gap-2 mb-3">
+        <span class="chip border-ink-500 bg-ink-700 text-mist-200 num">${esc(c.id)}</span>
+        ${stageChip(c.stage)} ${countdownHTML(c)} ${warrantyChip(c)}
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm mb-4">
+        <div class="bg-ink-800/70 rounded-xl p-3"><span class="text-mist-500 text-[11px] block mb-1">العميل</span><b>${esc(c.customer?.name)}</b></div>
+        <div class="bg-ink-800/70 rounded-xl p-3"><span class="text-mist-500 text-[11px] block mb-1">الجوال</span><a href="tel:${esc(c.customer?.phone)}" dir="ltr" class="num font-bold text-left block">${esc(c.customer?.phone)}</a></div>
+        <div class="bg-ink-800/70 rounded-xl p-3 sm:col-span-2"><span class="text-mist-500 text-[11px] block mb-1">العنوان</span>${esc(c.customer?.address || '—')}</div>
+        <div class="bg-ink-800/70 rounded-xl p-3"><span class="text-mist-500 text-[11px] block mb-1">تاريخ العقد</span><span class="num">${fmtDate(c.createdAt)}</span></div>
+        <div class="bg-ink-800/70 rounded-xl p-3"><span class="text-mist-500 text-[11px] block mb-1">تاريخ التركيب</span><span class="num">${c.installation?.installedAt ? fmtDate(c.installation.installedAt) : 'لم يتم بعد'}</span></div>
+        <div class="bg-ink-800/70 rounded-xl p-3"><span class="text-mist-500 text-[11px] block mb-1">رسمة المصنع</span>${c.drawing ? (c.drawing.url ? `<a href="${esc(c.drawing.url)}" target="_blank" rel="noopener" class="text-gold-300 hover:underline"><i class="fa-solid fa-file-arrow-down me-1"></i>${esc(c.drawing.name)}</a>` : esc(c.drawing.name || 'مرفوعة')) : '<span class="text-mist-500">لم تُرفع بعد</span>'}</div>
+        <div class="bg-ink-800/70 rounded-xl p-3"><span class="text-mist-500 text-[11px] block mb-1">المبالغ</span><span class="num">الإجمالي ${fmtMoney(c.payment?.total)} — المتبقي ${fmtMoney(remainingOf(c))}</span></div>
+      </div>
+      <div class="mb-3">
+        <p class="text-xs font-bold text-mist-300 mb-2"><i class="fa-solid fa-list-check me-1.5 text-gold-400"></i>تذاكر الصيانة (${tickets.length})</p>
+        ${tickets.length ? `<div class="space-y-2">${tickets.map(t => `
+          <div class="bg-ink-800/70 border border-ink-600 rounded-xl p-3 flex flex-wrap items-center gap-2">
+            <span class="chip num ${t.status === 'open' ? 'bg-rose-500/15 text-rose-300 border-rose-400/20' : 'bg-emerald-500/15 text-emerald-300 border-emerald-400/20'}">${t.status === 'open' ? '<i class="fa-solid fa-circle-dot"></i> مفتوحة' : '<i class="fa-solid fa-circle-check"></i> مغلقة'}</span>
+            <span class="text-xs text-mist-500 num">${t.id}</span>
+            <span class="text-sm flex-1 min-w-[200px]">${esc(t.description)}</span>
+            ${t.technician ? `<span class="text-[11px] text-mist-400"><i class="fa-solid fa-user-gear me-1"></i>${esc(t.technician)}</span>` : ''}
+            <span class="text-[11px] text-mist-500 num">${fmtDate(t.openedAt)}</span>
+            ${t.status === 'open' && isSupervisor() ? `<button class="btn-ghost !py-1.5 !px-2.5 !text-[11px]" data-act="closeTicket" data-id="${c.id}" data-tid="${t.id}"><i class="fa-solid fa-check"></i> إغلاق</button>` : ''}
+          </div>`).join('')}</div>` : '<p class="text-xs text-mist-500">لا توجد تذاكر صيانة سابقة.</p>'}
+      </div>
+      <div class="flex flex-wrap gap-2">
+        ${canTicket() ? `<button class="btn-gold !py-2 !px-3 text-xs" data-act="openTicket" data-id="${c.id}"><i class="fa-solid fa-plus"></i> فتح تذكرة صيانة جديدة</button>` : ''}
+        <button class="btn-ghost !py-2 !px-3 text-xs" data-act="openDetails" data-id="${c.id}"><i class="fa-solid fa-file-lines"></i> الملف الكامل</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* ---------------------- نافذة تفاصيل العقد ---------------------- */
+function stepperHTML(c) {
+  const idx = { new: 0, deposit_paid: 1, fully_paid: 2, in_production: 3, shipping: 3, arrived_warehouse: 4, assigned: 5, needs_finishing: 5, installation_done: 6, completed: 7 }[c.stage] ?? 0;
+  return `
+  <div class="flex flex-wrap gap-y-3 justify-between items-start bg-ink-800/50 border border-ink-700 rounded-2xl p-4">
+    ${STEP_NAMES.map((n, i) => `
+      <div class="flex flex-col items-center gap-1.5 min-w-[64px] flex-1">
+        <span class="w-7 h-7 rounded-full grid place-items-center text-[10px] font-bold num ${i < idx ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/30' : i === idx ? 'bg-gold-500 text-ink-950 shadow-md shadow-gold-500/30' : 'bg-ink-700 text-mist-500 border border-ink-600'}">${i < idx ? '<i class="fa-solid fa-check"></i>' : i + 1}</span>
+        <span class="text-[9.5px] ${i <= idx ? 'text-mist-200 font-bold' : 'text-mist-500'} text-center leading-tight">${n}</span>
+      </div>`).join('')}
+  </div>`;
+}
+
+function infoRow(label, value, ltr = false) {
+  return `<div class="bg-ink-800/70 rounded-xl px-3 py-2.5"><span class="text-mist-500 text-[11px] block mb-0.5">${label}</span><span class="text-sm font-bold ${ltr ? 'num text-left block' : ''}" ${ltr ? 'dir="ltr"' : ''}>${value}</span></div>`;
+}
+
+/**
+ * زر رفع/تحديث رسمة المصنع — مصدر واحد للمنطق يتطابق مع قفل الأمان (canUploadDrawing).
+ * تُعيد '' لمن لا يملك صلاحية الدفع أو بعد اكتمال الملف.
+ */
+function drawingButtonHTML(c) {
+  if (!canPay()) return '';
+  if (['completed', 'deposit_paid', 'new'].includes(c.stage) && !isSupervisor()) {
+    // قفل الأمان قبل السداد الكامل: زر معطّل بمظهر مقفل.
+    return `<button class="btn-ghost !py-2 !px-3 text-xs mt-3 opacity-40 cursor-not-allowed" disabled title="قفل الأمان: متاح بعد السداد الكامل فقط"><i class="fa-solid fa-lock"></i> رفع رسمة المصنع — مقفل حتى السداد الكامل</button>`;
+  }
+  if (['new', 'deposit_paid'].includes(c.stage) && isSupervisor()) {
+    return `<button class="btn-gold !py-2 !px-3 text-xs mt-3" data-act="openDrawing" data-id="${c.id}" title="تجاوز قفل السداد بصلاحية المدير العام"><i class="fa-solid fa-user-shield"></i> رفع رسمة المصنع (تجاوز القفل)</button>`;
+  }
+  if (['fully_paid', 'in_production'].includes(c.stage)) {
+    const allowed = canUploadDrawing(c);
+    return `<button class="btn-gold !py-2 !px-3 text-xs mt-3 ${allowed ? '' : 'opacity-40 cursor-not-allowed'}" data-act="openDrawing" data-id="${c.id}" ${allowed ? '' : 'disabled title="متاح بعد السداد الكامل فقط"'}><i class="fa-solid fa-cloud-arrow-up"></i> ${c.drawing ? 'تحديث الرسمة' : 'رفع رسمة المصنع'}</button>`;
+  }
+  return '';
+}
+
+function renderDetails(c) {
+  $('#dt_name').textContent = c.customer?.name || '—';
+  $('#dt_id').textContent = c.id;
+  $('#dt_stage').outerHTML = `<span id="dt_stage">${stageChip(c.stage)}</span>`;
+  $('#dt_countdown').outerHTML = `<span id="dt_countdown">${countdownHTML(c) + warrantyChip(c)}</span>`;
+
+  const rem = remainingOf(c);
+  const lockNote = (!canUploadDrawing(c))
+    ? `<p class="text-[11px] text-rose-300/90 mt-2"><i class="fa-solid fa-lock me-1"></i>الرفع مقفل برمجيًا حتى السداد الكامل (المتبقي: ${fmtMoney(rem)}). يُستثنى من ذلك المدير العام.</p>`
+    : (isSupervisor() && rem > 0 ? '<p class="text-[11px] text-gold-300/90 mt-2"><i class="fa-solid fa-user-shield me-1"></i>تجاوز قفل السداد بصلاحية المدير العام.</p>' : '');
+
+  const payRows = (c.payment?.log || []).map(p => `
+    <tr class="border-t border-ink-700">
+      <td class="py-2 num">${fmtMoney(p.amount)}</td>
+      <td class="py-2 text-mist-300 text-xs">${esc(p.kind)}</td>
+      <td class="py-2 text-mist-400 text-xs">${esc(p.note || '—')}</td>
+      <td class="py-2 text-mist-400 text-xs">${esc(p.by)}</td>
+      <td class="py-2 text-mist-500 text-xs num">${fmtDate(p.at)}</td>
+    </tr>`).join('');
+
+  const tickets = (c.maintenance || []).map(t => `
+    <div class="bg-ink-800/70 border border-ink-600 rounded-xl p-3 flex flex-wrap items-center gap-2">
+      <span class="chip num ${t.status === 'open' ? 'bg-rose-500/15 text-rose-300 border-rose-400/20' : 'bg-emerald-500/15 text-emerald-300 border-emerald-400/20'}">${t.status === 'open' ? '<i class="fa-solid fa-circle-dot"></i> مفتوحة' : '<i class="fa-solid fa-circle-check"></i> مغلقة'}</span>
+      <span class="text-xs text-mist-500 num">${t.id}</span>
+      <span class="text-sm flex-1 min-w-[180px]">${esc(t.description)}</span>
+      <span class="text-[11px] text-mist-500 num">${fmtDate(t.openedAt)}</span>
+      ${t.status === 'open' && isSupervisor() ? `<button class="btn-ghost !py-1.5 !px-2.5 !text-[11px]" data-act="closeTicket" data-id="${c.id}" data-tid="${t.id}"><i class="fa-solid fa-check"></i> إغلاق</button>` : ''}
+    </div>`).join('');
+
+  const hist = (c.history || []).slice().reverse().map(h => `
+    <li class="relative ps-6 pb-4 last:pb-0">
+      <span class="absolute start-0 top-1 w-2.5 h-2.5 rounded-full bg-gold-400 shadow shadow-gold-400/40"></span>
+      <span class="absolute start-[4.5px] top-4 bottom-0 w-px bg-ink-600 last:hidden"></span>
+      <p class="text-sm">${esc(h.text)}</p>
+      <p class="text-[11px] text-mist-500 mt-0.5"><i class="fa-solid fa-user me-1"></i>${esc(h.by)} • <span class="num">${fmtDateTime(h.at)}</span></p>
+    </li>`).join('');
+
+  const progress = drawingProgress(c);
+
+  $('#dt_body').innerHTML = `
+    ${stepperHTML(c)}
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      ${infoRow('العميل', esc(c.customer?.name))}
+      ${infoRow('رقم الجوال', `<a href="tel:${esc(c.customer?.phone)}" class="hover:text-gold-300">${esc(c.customer?.phone)}</a>`, true)}
+      ${infoRow('العنوان في المدينة', esc(c.customer?.address))}
+      ${infoRow('المصمم المسؤول', esc(c.designer))}
+      ${infoRow('تاريخ فتح العقد', fmtDate(c.createdAt), true)}
+      ${infoRow('ملاحظات', esc(c.notes || '—'))}
+    </div>
+
+    <div class="card !bg-ink-800/50 p-4">
+      <h4 class="font-bold text-sm mb-3"><i class="fa-solid fa-wallet text-gold-400 me-2"></i>المبالغ والمدفوعات</h4>
+      <div class="grid grid-cols-3 gap-2 mb-3 text-center">
+        <div class="bg-ink-800 rounded-xl py-2.5"><span class="text-[11px] text-mist-500 block">الإجمالي</span><b class="num text-sm">${fmtMoney(c.payment?.total)}</b></div>
+        <div class="bg-ink-800 rounded-xl py-2.5"><span class="text-[11px] text-mist-500 block">المدفوع</span><b class="num text-sm text-emerald-300">${fmtMoney(paidOf(c))}</b></div>
+        <div class="bg-ink-800 rounded-xl py-2.5"><span class="text-[11px] text-mist-500 block">المتبقي</span><b class="num text-sm ${rem > 0 ? 'text-gold-300' : 'text-emerald-300'}">${fmtMoney(rem)}</b></div>
+      </div>
+      ${payRows ? `<div class="overflow-x-auto"><table class="w-full text-xs text-mist-200 mb-2"><thead><tr class="text-mist-500 text-[11px] text-start"><th class="py-1.5 text-start">المبلغ</th><th class="py-1.5 text-start">النوع</th><th class="py-1.5 text-start">ملاحظة</th><th class="py-1.5 text-start">بواسطة</th><th class="py-1.5 text-start">التاريخ</th></tr></thead><tbody>${payRows}</tbody></table></div>` : '<p class="text-xs text-mist-500 mb-2">لم تُسجَّل أي دفعات بعد.</p>'}
+      ${['new', 'deposit_paid'].includes(c.stage) && canPay() ? `<button class="btn-gold !py-2 !px-3 text-xs" data-act="openPay" data-id="${c.id}"><i class="fa-solid fa-cash-register"></i> تسجيل دفعة</button>` : ''}
+    </div>
+
+    <div class="card !bg-ink-800/50 p-4">
+      <h4 class="font-bold text-sm mb-3"><i class="fa-solid fa-file-import text-gold-400 me-2"></i>رسمة المصنع ومهلة التسليم</h4>
+      ${c.drawing ? `
+        <div class="flex flex-wrap items-center gap-2 mb-2">
+          <span class="chip bg-sky-500/15 text-sky-300 border-sky-400/20"><i class="fa-solid fa-check"></i> مرفوعة</span>
+          ${c.drawing.url ? `<a href="${esc(c.drawing.url)}" target="_blank" rel="noopener" class="chip border-gold-500/30 bg-gold-500/10 text-gold-300 hover:brightness-125"><i class="fa-solid fa-file-arrow-down"></i> ${esc(c.drawing.name)}</a>` : `<span class="text-sm">${esc(c.drawing.name)}</span>`}
+        </div>
+        <p class="text-xs text-mist-400">رُفعت بواسطة ${esc(c.drawing.uploadedBy)} — <span class="num">${fmtDateTime(c.drawing.uploadedAt)}</span> • مهلة ${c.drawing.deadlineDays} يومًا تنتهي <span class="num">${fmtDate(c.drawing.deadline)}</span></p>
+        <div class="h-2 bg-ink-700 rounded-full overflow-hidden mt-3"><div class="h-full bg-gradient-to-l from-gold-600 to-gold-400 rounded-full" style="width:${progress}%"></div></div>
+      ` : '<p class="text-xs text-mist-500">لم تُرفع الرسمة بعد — يتطلب ذلك السداد الكامل أولاً.</p>'}
+      ${lockNote}
+      ${drawingButtonHTML(c)}
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div class="card !bg-ink-800/50 p-4">
+        <h4 class="font-bold text-sm mb-3"><i class="fa-solid fa-truck-fast text-gold-400 me-2"></i>التصنيع والشحن</h4>
+        <div class="space-y-2 text-xs">
+          <p class="flex justify-between"><span class="text-mist-500">بدء التصنيع (بعد الرسمة)</span><span class="num">${c.production?.startedAt ? fmtDate(c.production.startedAt) : '—'}</span></p>
+          <p class="flex justify-between"><span class="text-mist-500">بدء الشحن من القصيم</span><span class="num">${c.shipping?.startedAt ? fmtDate(c.shipping.startedAt) : '—'}</span></p>
+          <p class="flex justify-between"><span class="text-mist-500">الوصول لمستودع المدينة</span><span class="num">${c.shipping?.arrivedAt ? fmtDate(c.shipping.arrivedAt) : '—'}</span></p>
+        </div>
+        ${c.stage === 'in_production' && canLogistics() ? `<button class="btn-sky !py-2 !px-3 text-xs mt-3" data-act="startShipping" data-id="${c.id}"><i class="fa-solid fa-truck-fast"></i> بدء الشحن من القصيم</button>` : ''}
+        ${c.stage === 'shipping' && canLogistics() ? `<button class="btn-emerald !py-2 !px-3 text-xs mt-3" data-act="arrive" data-id="${c.id}"><i class="fa-solid fa-warehouse"></i> تم الوصول إلى مستودع المدينة</button>` : ''}
+      </div>
+      <div class="card !bg-ink-800/50 p-4">
+        <h4 class="font-bold text-sm mb-3"><i class="fa-solid fa-user-gear text-gold-400 me-2"></i>التركيب والاعتماد</h4>
+        <div class="space-y-2 text-xs">
+          <p class="flex justify-between"><span class="text-mist-500">الفني المسؤول</span><span>${esc(c.technician?.name || 'لم يُسند بعد')}</span></p>
+          <p class="flex justify-between"><span class="text-mist-500">تاريخ الإسناد</span><span class="num">${c.technician?.assignedAt ? fmtDate(c.technician.assignedAt) : '—'}</span></p>
+          <p class="flex justify-between"><span class="text-mist-500">تاريخ التركيب</span><span class="num">${c.installation?.installedAt ? fmtDate(c.installation.installedAt) : '—'}</span></p>
+          <p class="flex justify-between"><span class="text-mist-500">الضمان (15 سنة)</span><span class="num">${c.warranty?.until ? fmtDate(c.warranty.until) : 'يُفعّل بعد التركيب'}</span></p>
+        </div>
+        <div class="flex flex-wrap gap-2 mt-3">
+          ${c.stage === 'arrived_warehouse' && canLogistics() ? `<button class="btn-gold !py-2 !px-3 text-xs" data-act="openAssign" data-id="${c.id}"><i class="fa-solid fa-user-gear"></i> إسناد لفني</button>` : ''}
+          ${['assigned', 'needs_finishing'].includes(c.stage) && (techOwn(c) || isSupervisor()) ? `
+            <button class="btn-emerald !py-2 !px-3 text-xs" data-act="installDone" data-id="${c.id}"><i class="fa-solid fa-circle-check"></i> تم الانتهاء من التركيب</button>
+            ${c.stage === 'assigned' ? `<button class="btn-ghost !py-2 !px-3 text-xs !text-yellow-300" data-act="needsFinishing" data-id="${c.id}"><i class="fa-solid fa-paint-roller"></i> يحتاج بعض التشطيبات</button>` : ''}` : ''}
+          ${c.stage === 'installation_done' && canClose() ? `<button class="btn-gold !py-2 !px-3 text-xs" data-act="closeFile" data-id="${c.id}"><i class="fa-solid fa-flag-checkered"></i> اعتماد وإنهاء الملف نهائيًا</button>` : ''}
+        </div>
+      </div>
+    </div>
+
+    <div class="card !bg-ink-800/50 p-4">
+      <h4 class="font-bold text-sm mb-3"><i class="fa-solid fa-screwdriver-wrench text-gold-400 me-2"></i>تذاكر الصيانة (${(c.maintenance || []).length})</h4>
+      ${tickets || '<p class="text-xs text-mist-500">لا توجد تذاكر صيانة.</p>'}
+      ${canTicket() ? `<button class="btn-ghost !py-2 !px-3 text-xs mt-3" data-act="openTicket" data-id="${c.id}"><i class="fa-solid fa-plus"></i> فتح تذكرة صيانة</button>` : ''}
+    </div>
+
+    <div class="card !bg-ink-800/50 p-4">
+      <h4 class="font-bold text-sm mb-4"><i class="fa-solid fa-clock-rotate-left text-gold-400 me-2"></i>سجل العقد (${(c.history || []).length} حركة)</h4>
+      <ul>${hist}</ul>
+    </div>`;
+}
+
+/* ---------------------- تبويب عقد جديد ---------------------- */
+function renderNewTab() {
+  const ok = canCreate();
+  $('#ncNotice').classList.toggle('hidden', ok);
+  $$('#formNew input, #formNew select, #formNew button').forEach(el => { el.disabled = !ok; });
+  const designers = S.data?.settings?.designers || [];
+  const sel = $('#nc_designer');
+  const cur = sel.value;
+  sel.innerHTML = designers.map(d => `<option value="${esc(d)}" ${S.role === 'designer' && S.person === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
+  if (cur) sel.value = cur;
+}
+
+/* ---------------------- العرض الكامل ---------------------- */
+function renderHeader() {
+  const badge = $('#modeBadge');
+  if (S.mode === 'github') badge.outerHTML = `<span id="modeBadge" class="chip bg-emerald-500/15 text-emerald-300 border-emerald-400/20"><i class="fa-brands fa-github"></i> متصل: ${esc(S.cfg.owner)}/${esc(S.cfg.repo)}</span>`;
+  else if (S.mode === 'offline') badge.outerHTML = `<span id="modeBadge" class="chip bg-amber-500/15 text-amber-300 border-amber-400/20"><i class="fa-solid fa-triangle-exclamation"></i> غير متصل — نسخة مؤقتة (قراءة فقط)</span>`;
+  else badge.outerHTML = `<span id="modeBadge" class="chip bg-gold-500/15 text-gold-300 border-gold-400/20"><i class="fa-solid fa-flask"></i> وضع تجريبي محلي</span>`;
+
+  const chip = $('#identityChip');
+  if (S.role) {
+    chip.classList.remove('hidden');
+    chip.innerHTML = `<i class="fa-solid ${ROLE_DEFS[S.role].icon}"></i> ${ROLE_DEFS[S.role].label}${S.person ? ' — ' + esc(S.person) : ''}`;
+  } else chip.classList.add('hidden');
+}
+
+function renderAll() {
+  renderHeader();
+  renderStats();
+  renderContracts();
+  renderWarehouse();
+  renderSearch();
+  renderNewTab();
+  if (S.curId) {
+    const c = (S.data?.contracts || []).find(x => x.id === S.curId);
+    if (c) renderDetails(c);
+  }
+}
+
+function switchTab(name) {
+  S.tab = name;
+  $$('.tabbtn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  ['contracts', 'new', 'warehouse', 'maintenance'].forEach(t => {
+    $('#tab-' + t).classList.toggle('hidden', t !== name);
+    $('#tab-' + t).classList.toggle('fade-in', t === name);
+  });
+  if (name === 'maintenance') $('#mSearch').focus();
+}
+
+/* =====================================================================
+   النوافذ والتنبيهات المساعدة
+   ===================================================================== */
+function busy(on, text = 'جارٍ المعالجة…') {
+  $('#busyText').textContent = text;
+  $('#busy').classList.toggle('hidden', !on);
+  $('#busy').classList.toggle('flex', on);
+}
+function openModal(id) {
+  const m = $('#' + id);
+  m.classList.remove('hidden'); m.classList.add('flex');
+  document.body.style.overflow = 'hidden';
+}
+function closeModal(el) {
+  const m = el.closest('.modal') || el;
+  m.classList.add('hidden'); m.classList.remove('flex');
+  document.body.style.overflow = '';
+}
+function closeAllModals() { $$('.modal').forEach(m => { m.classList.add('hidden'); m.classList.remove('flex'); }); document.body.style.overflow = ''; }
+
+function toast(msg, type = 'ok') {
+  const styles = {
+    ok: 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200',
+    err: 'border-rose-400/30 bg-rose-500/10 text-rose-200',
+    warn: 'border-amber-400/30 bg-amber-500/10 text-amber-200',
+    info: 'border-sky-400/30 bg-sky-500/10 text-sky-200'
+  };
+  const icons = { ok: 'fa-circle-check', err: 'fa-circle-xmark', warn: 'fa-triangle-exclamation', info: 'fa-circle-info' };
+  const el = document.createElement('div');
+  el.className = `fade-in border ${styles[type]} backdrop-blur rounded-xl px-4 py-3 text-sm font-bold flex items-start gap-2 shadow-xl`;
+  el.innerHTML = `<i class="fa-solid ${icons[type]} mt-0.5"></i><span class="flex-1">${esc(msg)}</span>`;
+  $('#toasts').appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .4s'; setTimeout(() => el.remove(), 400); }, 4200);
+}
+
+function confirmDlg(title, msg, { danger = false, okLabel = 'تأكيد', icon = 'fa-circle-question' } = {}) {
+  return new Promise(resolve => {
+    $('#cf_title').textContent = title;
+    $('#cf_msg').textContent = msg;
+    $('#cf_icon').className = `fa-solid text-3xl mb-3 ${danger ? 'fa-triangle-exclamation text-rose-400' : icon + ' text-gold-400'}`;
+    const ok = $('#cf_ok');
+    ok.className = danger ? 'btn-danger flex-1' : 'btn-gold flex-1';
+    ok.textContent = okLabel;
+    S.confirmResolve = resolve;
+    openModal('m-confirm');
+  });
+}
+
+function findContract(id) { return (S.data?.contracts || []).find(c => c.id === id); }
+
+function hist(data, c, text) {
+  c.history = c.history || [];
+  c.history.push({ at: nowISO(), by: byName(), text });
+}
+
+/**
+ * الحصول على رقم متسلسل فريد آمن ضد التزامن.
+ * يعتمد على أكبر معرّف موجود فعليًا (وليس العدّاد وحده) ثم يرفع العدّاد فوقه،
+ * فيمنع تكرار المعرّفات حتى لو كان العدّاد قديمًا أو عاد خطوة عند دمج الأجهزة.
+ * prefix: مثل 'BRJ-2026-' أو 'MT-'؛ width: عدد أرقام التسلسل.
+ */
+function nextSeq(data, counterKey, existingIds, prefix, width) {
+  const re = new RegExp('^' + prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(\\d+)$');
+  let maxExisting = 0;
+  for (const id of existingIds) {
+    const m = re.exec(id || '');
+    if (m) maxExisting = Math.max(maxExisting, parseInt(m[1], 10));
+  }
+  const counter = parseInt(data.meta?.[counterKey], 10) || 1;
+  const num = Math.max(counter, maxExisting + 1);
+  data.meta = data.meta || {};
+  data.meta[counterKey] = num + 1;
+  return prefix + String(num).padStart(width, '0');
+}
+
+/* =====================================================================
+   إجراءات دورة حياة العقد
+   ===================================================================== */
+
+/* ---------- إنشاء عقد جديد ---------- */
+async function actCreateContract(e) {
+  e.preventDefault();
+  if (!canCreate()) return toast('ليست لديك صلاحية فتح العقود.', 'err');
+  const name = $('#nc_name').value.trim();
+  const phone = digitsOnly($('#nc_phone').value);
+  const address = $('#nc_address').value.trim();
+  const designer = $('#nc_designer').value;
+  const total = Math.round(+$('#nc_total').value || 0);
+  const deposit = Math.round(+$('#nc_deposit').value || 0);
+  const notes = $('#nc_notes').value.trim();
+
+  if (name.length < 3) return toast('أدخل اسم العميل كاملًا (3 أحرف على الأقل).', 'err');
+  if (!isValidSaudiPhone(phone)) return toast('رقم الجوال غير صحيح — الصيغة: 05xxxxxxxx أو 9665xxxxxxxx.', 'err');
+  if (address.length < 5) return toast('أدخل عنوان العميل في المدينة المنورة.', 'err');
+  if (!designer) return toast('اختر اسم المصمم (أضف المصممين من الإعدادات إن كانت القائمة فارغة).', 'err');
+  if (total <= 0) return toast('أدخل المبلغ الإجمالي للعقد.', 'err');
+  if (deposit < 0 || deposit > total) return toast('مبلغ العربون يجب أن يكون بين 0 والمبلغ الإجمالي.', 'err');
+
+  const ok = await confirmDlg('إنشاء عقد جديد', `سيتم إنشاء عقد باسم «${name}» بإجمالي ${fmtMoney(total)}. هل المتابعة؟`);
+  if (!ok) return;
+
+  busy(true, 'جارٍ إنشاء العقد وحفظه…');
+  try {
+    let newId = '';
+    await saveData((data) => {
+      data.contracts = data.contracts || [];
+      newId = nextSeq(data, 'nextNumber', data.contracts.map(x => x.id), `BRJ-${new Date().getFullYear()}-`, 4);
+      const contract = {
+        id: newId, createdAt: nowISO(),
+        customer: { name, phone, address },
+        designer,
+        payment: { total, deposit, log: [] },
+        stage: 'new',
+        drawing: null, production: null, shipping: null, technician: null,
+        installation: { status: 'pending', installedAt: null },
+        closure: null, warranty: null,
+        maintenance: [], notes,
+        history: [{ at: nowISO(), by: byName(), text: 'إنشاء العقد' }]
+      };
+      data.contracts.unshift(contract);
+    }, `عقد جديد ${newId} — ${name}`);
+    $('#formNew').reset();
+    $('#nc_remaining').textContent = '0';
+    toast(`تم إنشاء العقد ${newId} بنجاح${S.mode !== 'github' ? ' (وضع تجريبي محلي)' : ' وحفظه في المستودع'}.`, 'ok');
+    renderAll();
+    switchTab('contracts');
+  } catch (err) { toast('فشل الحفظ: ' + err.message, 'err'); }
+  finally { busy(false); }
+}
+
+/* ---------- تسجيل دفعة ---------- */
+function actOpenPay(id) {
+  const c = findContract(id); if (!c || !canPay()) return;
+  $('#pay_contract').innerHTML = `العقد <b class="num">${esc(c.id)}</b> — ${esc(c.customer?.name)} • المتبقي: <b class="num text-gold-300">${fmtMoney(remainingOf(c))}</b>`;
+  $('#pay_amount').value = remainingOf(c) || '';
+  $('#pay_kind').value = c.stage === 'new' ? 'عربون' : 'سداد نهائي';
+  $('#pay_note').value = '';
+  $('#formPayment').dataset.id = c.id;
+  openModal('m-payment');
+}
+
+async function actSubmitPayment(e) {
+  e.preventDefault();
+  const id = e.target.dataset.id;
+  const c = findContract(id); if (!c || !canPay()) return;
+  const amount = Math.round(+$('#pay_amount').value || 0);
+  const kind = $('#pay_kind').value;
+  const note = $('#pay_note').value.trim();
+  const rem = remainingOf(c);
+  if (amount <= 0) return toast('أدخل مبلغًا صحيحًا.', 'err');
+  if (amount > rem) return toast(`المبلغ يتجاوز المتبقي (${fmtMoney(rem)}).`, 'err');
+
+  busy(true, 'جارٍ تسجيل الدفعة…');
+  try {
+    await saveData((data) => {
+      const cc = data.contracts.find(x => x.id === id);
+      cc.payment.log = cc.payment.log || [];
+      cc.payment.log.push({ amount, kind, note, by: byName(), at: nowISO() });
+      const paid = cc.payment.log.reduce((s, p) => s + (+p.amount || 0), 0);
+      if (paid >= (cc.payment.total || 0) && ['new', 'deposit_paid'].includes(cc.stage)) {
+        cc.stage = 'fully_paid';
+        hist(data, cc, `تسجيل ${kind} بمبلغ ${fmtMoney(amount)} — أصبح العقد مسددًا بالكامل وانفتح رفع رسمة المصنع`);
+      } else {
+        hist(data, cc, `تسجيل ${kind} بمبلغ ${fmtMoney(amount)}${note ? ' — ' + note : ''}`);
+      }
+    }, `تسجيل دفعة ${fmtMoney(amount)} للعقد ${id}`);
+    closeModal(e.target);
+    toast(`تم تسجيل الدفعة بنجاح.${remainingOf(findContract(id)) <= 0 ? ' العقد الآن مسدد بالكامل — يمكن رفع رسمة المصنع.' : ''}`, 'ok');
+    renderAll();
+  } catch (err) { toast('فشل الحفظ: ' + err.message, 'err'); }
+  finally { busy(false); }
+}
+
+/* ---------- رفع رسمة المصنع (مع قفل الأمان) ---------- */
+function actOpenDrawing(id) {
+  const c = findContract(id); if (!c || !canPay()) return;
+  // قفل الأمان: تعطيل الرفع إلا بعد السداد الكامل — باستثناء المدير العام
+  if (!canUploadDrawing(c)) return toast('قفل الأمان: لا يمكن رفع الرسمة إلا بعد أن يصبح العقد مسددًا بالكامل.', 'err');
+  $('#dr_contract').innerHTML = `العقد <b class="num">${esc(c.id)}</b> — ${esc(c.customer?.name)} • المتبقي: <b class="num ${remainingOf(c) > 0 ? 'text-gold-300' : 'text-emerald-300'}">${fmtMoney(remainingOf(c))}</b>`;
+  $('#dr_lockWarn').classList.toggle('hidden', canUploadDrawing(c));
+  $('#dr_supNote').classList.toggle('hidden', !(isSupervisor() && remainingOf(c) > 0));
+  const sel = $('#dr_days');
+  const def = S.data?.settings?.defaultDeliveryDays || 30;
+  sel.innerHTML = Array.from({ length: 26 }, (_, i) => 15 + i)
+    .map(d => `<option value="${d}" ${d === def ? 'selected' : ''}>${d} يومًا</option>`).join('');
+  $('#dr_file').value = ''; $('#dr_link').value = '';
+  $('#formDrawing').dataset.id = c.id;
+  openModal('m-drawing');
+}
+
+function fileToB64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1]);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+async function actSubmitDrawing(e) {
+  e.preventDefault();
+  const id = e.target.dataset.id;
+  const c = findContract(id); if (!c || !canPay()) return;
+  if (!canUploadDrawing(c)) return toast('قفل الأمان: السداد غير مكتمل.', 'err');
+
+  const file = $('#dr_file').files[0];
+  const link = $('#dr_link').value.trim();
+  const days = +$('#dr_days').value || 30;
+  if (!file && !link) return toast('اختر ملف الرسمة أو أدخل رابطًا خارجيًا.', 'err');
+  if (file && file.size > MAX_UPLOAD_BYTES) return toast('حجم الملف أكبر من 900KB — استخدم رابطًا خارجيًا (Drive / Dropbox).', 'err');
+
+  busy(true, file && S.mode === 'github' ? 'جارٍ رفع ملف الرسمة إلى المستودع…' : 'جارٍ حفظ بيانات الرسمة…');
+  try {
+    let url = '', fname = '';
+    if (file) {
+      const ext = (file.name.split('.').pop() || 'bin').toLowerCase();
+      fname = `${id}-${Date.now()}.${ext}`.replace(/[^\w.-]/g, '_');
+      const b64 = await fileToB64(file);
+      if (S.mode === 'github' && ghCfgReady()) {
+        url = await ghUploadDrawing(fname, b64, id);
+      } else {
+        url = ''; // الوضع التجريبي: بيانات وصفية فقط
+      }
+    }
+    const name = file ? file.name : (link.match(/([^/?#]+)(?:[?#].*)?$/) || [])[1] || 'رسمة خارجية';
+    await saveData((data) => {
+      const cc = data.contracts.find(x => x.id === id);
+      const uploadedAt = nowISO();
+      cc.drawing = {
+        source: file ? (S.mode === 'github' ? 'github' : 'local') : 'link',
+        name, url: url || link,
+        uploadedAt, uploadedBy: byName(),
+        deadlineDays: days,
+        deadline: addDays(uploadedAt, days)
+      };
+      cc.stage = 'in_production';
+      cc.production = { startedAt: uploadedAt };
+      hist(data, cc, `رفع رسمة المصنع «${name}» — بدأ عدّ التسليم تلقائيًا (${days} يومًا حتى ${fmtDate(cc.drawing.deadline)})`);
+    }, `رفع رسمة المصنع للعقد ${id} + بدء عداد التسليم`);
+    closeModal(e.target);
+    toast(`تم رفع الرسمة بنجاح — بدأ عدّاد التسليم (${days} يومًا). المرحلة التالية: التصنيع ثم الشحن من القصيم.`, 'ok');
+    renderAll();
+  } catch (err) { toast('فشل رفع الرسمة: ' + err.message, 'err'); }
+  finally { busy(false); }
+}
+
+/* ---------- بدء الشحن ---------- */
+async function actStartShipping(id) {
+  const c = findContract(id); if (!c || !canLogistics()) return;
+  const ok = await confirmDlg('بدء الشحن', `تأكيد بدء شحن طلب «${c.customer?.name}» (${c.id}) من مصنع القصيم إلى المدينة المنورة؟`, { icon: 'fa-truck-fast', okLabel: 'بدء الشحن' });
+  if (!ok) return;
+  busy(true, 'جارٍ تحديث الحالة…');
+  try {
+    await saveData((data) => {
+      const cc = data.contracts.find(x => x.id === id);
+      cc.shipping = { startedAt: nowISO(), arrivedAt: null };
+      cc.stage = 'shipping';
+      hist(data, cc, 'بدء الشحن من مصنع القصيم إلى المدينة المنورة (الوصول المتوقع ~10 أيام)');
+    }, `بدء شحن العقد ${id}`);
+    toast('تم تحديث الحالة إلى «قيد الشحن» — عند وصول الشحنة يضغط مدير المستودع زر الوصول.', 'ok');
+    renderAll();
+  } catch (err) { toast('فشل الحفظ: ' + err.message, 'err'); }
+  finally { busy(false); }
+}
+
+/* ---------- تأكيد الوصول للمستودع ---------- */
+async function actArrive(id) {
+  const c = findContract(id); if (!c || !canLogistics()) return;
+  const ok = await confirmDlg('تأكيد الوصول', `هل وصلت شحنة العقد «${c.customer?.name}» (${c.id}) إلى مستودع المدينة المنورة؟ سيظهر التحديث فورًا أمام الجميع.`, { okLabel: 'تم الوصول', icon: 'fa-warehouse' });
+  if (!ok) return;
+  busy(true, 'جارٍ تأكيد الوصول…');
+  try {
+    await saveData((data) => {
+      const cc = data.contracts.find(x => x.id === id);
+      cc.shipping = cc.shipping || {};
+      cc.shipping.arrivedAt = nowISO();
+      cc.stage = 'arrived_warehouse';
+      hist(data, cc, 'تم الوصول إلى مستودع المدينة المنورة — بانتظار الإسناد لفني تركيب');
+    }, `وصول العقد ${id} إلى مستودع المدينة`);
+    toast('تم تسجيل الوصول إلى مستودع المدينة — الطلب جاهز للإسناد لفني تركيب.', 'ok');
+    renderAll();
+  } catch (err) { toast('فشل الحفظ: ' + err.message, 'err'); }
+  finally { busy(false); }
+}
+
+/* ---------- إسناد فني ---------- */
+function actOpenAssign(id) {
+  const c = findContract(id); if (!c || !canLogistics()) return;
+  $('#as_contract').innerHTML = `العقد <b class="num">${esc(c.id)}</b> — ${esc(c.customer?.name)} • ${esc(c.customer?.address || '')}`;
+  $('#as_tech').innerHTML = (S.data?.settings?.technicians || []).map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('');
+  $('#as_note').value = '';
+  $('#formAssign').dataset.id = c.id;
+  openModal('m-assign');
+}
+
+async function actSubmitAssign(e) {
+  e.preventDefault();
+  const id = e.target.dataset.id;
+  const c = findContract(id); if (!c || !canLogistics()) return;
+  const tech = $('#as_tech').value;
+  const note = $('#as_note').value.trim();
+  if (!tech) return toast('اختر اسم الفني (أضف الفنيين من الإعدادات إن كانت القائمة فارغة).', 'err');
+  busy(true, 'جارٍ الإسناد…');
+  try {
+    await saveData((data) => {
+      const cc = data.contracts.find(x => x.id === id);
+      cc.technician = { name: tech, assignedAt: nowISO(), assignedBy: byName() };
+      if (note) cc.notes = (cc.notes ? cc.notes + ' | ' : '') + 'ملاحظة إسناد: ' + note;
+      cc.stage = 'assigned';
+      hist(data, cc, `إسناد الطلب لفني التركيب: ${tech}${note ? ' — ' + note : ''}`);
+    }, `إسناد العقد ${id} للفني ${tech}`);
+    closeModal(e.target);
+    toast(`تم إسناد العقد للفني ${tech} — أصبحت بيانات العميل (الجوال والعنوان) متاحة في مهمته.`, 'ok');
+    renderAll();
+  } catch (err) { toast('فشل الحفظ: ' + err.message, 'err'); }
+  finally { busy(false); }
+}
+
+/* ---------- تأكيدات الفني ---------- */
+async function actInstallDone(id) {
+  const c = findContract(id);
+  if (!c || !(techOwn(c) || isSupervisor())) return toast('هذا الإجراء متاح للفني المسند إليه الطلب أو للمدير العام.', 'err');
+  const ok = await confirmDlg('تم الانتهاء من التركيب', `تأكيد إتمام تركيب طلب «${c.customer?.name}» (${c.id}) بالكامل؟`, { okLabel: 'تم التركيب', icon: 'fa-circle-check' });
+  if (!ok) return;
+  busy(true, 'جارٍ التحديث…');
+  try {
+    await saveData((data) => {
+      const cc = data.contracts.find(x => x.id === id);
+      const at = nowISO();
+      cc.installation = { status: 'done', installedAt: at };
+      cc.stage = 'installation_done';
+      const wy = S.data?.settings?.warrantyYears || 15;
+      cc.warranty = { years: wy, until: addYears(at, wy) };
+      hist(data, cc, `تم الانتهاء من التركيب — بانتظار اعتماد المشرف النهائي (بدأ احتساب ضمان ${wy} سنة حتى ${fmtDate(cc.warranty.until)})`);
+    }, `إتمام تركيب العقد ${id}`);
+    toast('تم تسجيل إتمام التركيب — بانتظار اعتماد المشرف لإنهاء الملف.', 'ok');
+    renderAll();
+  } catch (err) { toast('فشل الحفظ: ' + err.message, 'err'); }
+  finally { busy(false); }
+}
+
+async function actNeedsFinishing(id) {
+  const c = findContract(id);
+  if (!c || !(techOwn(c) || isSupervisor())) return toast('هذا الإجراء متاح للفني المسند إليه الطلب أو للمدير العام.', 'err');
+  const ok = await confirmDlg('يحتاج بعض التشطيبات', `تأكيد أن تركيب «${c.customer?.name}» (${c.id}) يحتاج بعض التشطيبات الإضافية؟`, { okLabel: 'تأكيد', icon: 'fa-paint-roller' });
+  if (!ok) return;
+  busy(true, 'جارٍ التحديث…');
+  try {
+    await saveData((data) => {
+      const cc = data.contracts.find(x => x.id === id);
+      cc.installation = { status: 'needs_finishing', installedAt: cc.installation?.installedAt || null };
+      cc.stage = 'needs_finishing';
+      hist(data, cc, 'تم التركيب مع الحاجة لبعض التشطيبات — يعود الفني لإتمامها');
+    }, `تحديث حالة العقد ${id}: يحتاج تشطيبات`);
+    toast('تم تسجيل الحالة — تظهر المهمة للفني والمشرف لإتمام التشطيبات.', 'ok');
+    renderAll();
+  } catch (err) { toast('فشل الحفظ: ' + err.message, 'err'); }
+  finally { busy(false); }
+}
+
+/* ---------- اعتماد نهائي (المشرف فقط) ---------- */
+async function actCloseFile(id) {
+  const c = findContract(id); if (!c || !canClose()) return toast('المدير العام فقط هو المخول بإنهاء ملف العميل.', 'err');
+  const ok = await confirmDlg('إنهاء ملف العميل نهائيًا', `اعتماد إنجاز طلب «${c.customer?.name}» (${c.id}) وإغلاق الملف كاملًا؟ بعد الاعتماد يبقى العقد متاحًا في أرشيف الصيانة وضمان الـ15 سنة.`, { okLabel: 'اعتماد وإنهاء', danger: false, icon: 'fa-flag-checkered' });
+  if (!ok) return;
+  busy(true, 'جارٍ الاعتماد النهائي…');
+  try {
+    await saveData((data) => {
+      const cc = data.contracts.find(x => x.id === id);
+      const at = nowISO();
+      cc.closure = { closedAt: at, closedBy: byName() };
+      if (!cc.installation?.installedAt) { cc.installation = { status: 'done', installedAt: at }; }
+      const wy = S.data?.settings?.warrantyYears || 15;
+      cc.warranty = cc.warranty || { years: wy, until: addYears(cc.installation.installedAt, wy) };
+      cc.stage = 'completed';
+      hist(data, cc, `اعتماد نهائي وإنهاء ملف العميل — الضمان سارٍ حتى ${fmtDate(cc.warranty.until)}`);
+    }, `اعتماد نهائي وإغلاق ملف العقد ${id}`);
+    toast('تم إنهاء ملف العميل نهائيًا — أصبح العقد في أرشيف الضمان والصيانة.', 'ok');
+    renderAll();
+  } catch (err) { toast('فشل الحفظ: ' + err.message, 'err'); }
+  finally { busy(false); }
+}
+
+/* ---------- تذاكر الصيانة ---------- */
+function actOpenTicket(id) {
+  const c = findContract(id); if (!c || !canTicket()) return;
+  $('#tk_contract').innerHTML = `العقد <b class="num">${esc(c.id)}</b> — ${esc(c.customer?.name)} • ${esc(c.customer?.phone || '')}`;
+  $('#tk_tech').innerHTML = '<option value="">— بدون تحديد —</option>' + (S.data?.settings?.technicians || []).map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('');
+  $('#tk_desc').value = '';
+  $('#formTicket').dataset.id = c.id;
+  openModal('m-ticket');
+}
+
+async function actSubmitTicket(e) {
+  e.preventDefault();
+  const id = e.target.dataset.id;
+  const c = findContract(id); if (!c || !canTicket()) return;
+  const desc = $('#tk_desc').value.trim();
+  const tech = $('#tk_tech').value;
+  if (desc.length < 5) return toast('اكتب وصفًا واضحًا للمشكلة (5 أحرف على الأقل).', 'err');
+  busy(true, 'جارٍ فتح التذكرة…');
+  try {
+    let tid = '';
+    await saveData((data) => {
+      const cc = data.contracts.find(x => x.id === id);
+      const allTickets = data.contracts.flatMap(x => (x.maintenance || []).map(t => t.id));
+      tid = nextSeq(data, 'nextTicket', allTickets, 'MT-', 4);
+      cc.maintenance = cc.maintenance || [];
+      cc.maintenance.unshift({ id: tid, openedAt: nowISO(), by: byName(), technician: tech || '', description: desc, status: 'open', closedAt: null });
+      hist(data, cc, `فتح تذكرة صيانة ${tid}: ${desc}`);
+    }, `فتح تذكرة صيانة ${tid} للعقد ${id}`);
+    closeModal(e.target);
+    toast(`تم فتح تذكرة الصيانة ${tid} بنجاح.`, 'ok');
+    renderAll();
+  } catch (err) { toast('فشل الحفظ: ' + err.message, 'err'); }
+  finally { busy(false); }
+}
+
+async function actCloseTicket(id, tid) {
+  if (!isSupervisor()) return toast('إغلاق التذاكر متاح للمدير العام.', 'err');
+  const ok = await confirmDlg('إغلاق تذكرة الصيانة', `تأكيد إغلاق التذكرة ${tid}؟`, { okLabel: 'إغلاق التذكرة' });
+  if (!ok) return;
+  busy(true, 'جارٍ الإغلاق…');
+  try {
+    await saveData((data) => {
+      const cc = data.contracts.find(x => x.id === id);
+      const t = (cc.maintenance || []).find(x => x.id === tid);
+      if (t) { t.status = 'closed'; t.closedAt = nowISO(); }
+      hist(data, cc, `إغلاق تذكرة الصيانة ${tid}`);
+    }, `إغلاق تذكرة الصيانة ${tid}`);
+    toast('تم إغلاق التذكرة.', 'ok');
+    renderAll();
+  } catch (err) { toast('فشل الحفظ: ' + err.message, 'err'); }
+  finally { busy(false); }
+}
+
+/* ---------- فتح التفاصيل ---------- */
+function actOpenDetails(id) {
+  const c = findContract(id); if (!c) return;
+  S.curId = id;
+  renderDetails(c);
+  openModal('m-details');
+}
+
+/* =====================================================================
+   الهوية والأدوار
+   ===================================================================== */
+function setIdentity(role, person, { silent = false } = {}) {
+  S.role = role || null;
+  S.person = person || '';
+  LS.set(STORE.role, { role: S.role, person: S.person });
+  $('#roleSel').value = S.role || '';
+  const ps = $('#personSel');
+  if (S.role === 'designer' || S.role === 'technician') {
+    const list = (S.data?.settings?.[S.role === 'designer' ? 'designers' : 'technicians']) || [];
+    ps.classList.remove('hidden');
+    ps.innerHTML = list.map(n => `<option value="${esc(n)}" ${n === S.person ? 'selected' : ''}>${esc(n)}</option>`).join('');
+  } else { ps.classList.add('hidden'); }
+  if (!silent) toast(`تم تبديل الدور: ${ROLE_DEFS[S.role]?.label}${S.person ? ' — ' + S.person : ''}`, 'info');
+  renderAll();
+}
+
+function openOnboard(step = 'role') {
+  const ob = $('#onboard');
+  ob.classList.remove('hidden'); ob.classList.add('flex');
+  const roles = $('#ob_roles'), persons = $('#ob_persons');
+  if (step === 'role') {
+    roles.classList.remove('hidden'); persons.classList.add('hidden'); persons.classList.remove('grid');
+  } else {
+    roles.classList.add('hidden');
+    const list = (S.data?.settings?.[S.obRole === 'designer' ? 'designers' : 'technicians']) || [];
+    persons.innerHTML = `<p class="col-span-2 text-sm font-bold text-mist-300 mb-1">اختر اسمك للمتابعة:</p>` +
+      list.map(n => `<button class="card p-4 hover:border-gold-500/50 transition" data-operson="${esc(n)}"><i class="fa-solid fa-user text-gold-400 mb-2"></i><p class="font-bold text-sm">${esc(n)}</p></button>`).join('');
+    persons.classList.remove('hidden'); persons.classList.add('grid');
+  }
+}
+function closeOnboard() { const ob = $('#onboard'); ob.classList.add('hidden'); ob.classList.remove('flex'); }
+
+/* =====================================================================
+   الإعدادات
+   ===================================================================== */
+function openSettings() {
+  $('#cfg_owner').value = S.cfg.owner; $('#cfg_repo').value = S.cfg.repo;
+  $('#cfg_branch').value = S.cfg.branch || 'main'; $('#cfg_path').value = S.cfg.path || 'data/contracts.json';
+  $('#cfg_token').value = S.cfg.token;
+  const st = S.data?.settings || {};
+  $('#sys_designers').value = (st.designers || []).join('\n');
+  $('#sys_technicians').value = (st.technicians || []).join('\n');
+  $('#sys_warranty').value = st.warrantyYears ?? 15;
+  $('#sys_delivery').value = st.defaultDeliveryDays ?? 30;
+  const gate = !isSupervisor();
+  $('#sysGate').classList.toggle('hidden', !gate);
+  ['#sys_designers', '#sys_technicians', '#sys_warranty', '#sys_delivery', '#btnSaveSys'].forEach(s => $(s).disabled = gate);
+  openModal('m-settings');
+}
+
+async function actSaveCfg() {
+  const cfg = {
+    owner: $('#cfg_owner').value.trim(),
+    repo: $('#cfg_repo').value.trim(),
+    branch: $('#cfg_branch').value.trim() || 'main',
+    path: $('#cfg_path').value.trim() || 'data/contracts.json',
+    token: $('#cfg_token').value.trim()
+  };
+  if ((cfg.owner || cfg.repo || cfg.token) && !(cfg.owner && cfg.repo && cfg.token))
+    return toast('لتفعيل الاتصال أدخل: مالك المستودع + اسم المستودع + رمز الوصول. أو امسح الحقول كلها للوضع التجريبي.', 'warn');
+  S.cfg = cfg; LS.set(STORE.cfg, cfg);
+  busy(true, 'جارٍ الاتصال بـ GitHub…');
+  await loadData(true);
+  busy(false);
+  renderAll();
+  if (S.mode === 'github') { toast('تم الاتصال بالمستودع بنجاح — كل التحديثات ستُحفظ كـ Commits.', 'ok'); closeAllModals(); }
+  else toast('لم يتم الاتصال بعد — التحقق من البيانات أو استمر بالوضع التجريبي.', 'warn');
+}
+
+async function actTestConn() {
+  const tmp = { owner: $('#cfg_owner').value.trim(), repo: $('#cfg_repo').value.trim(), branch: $('#cfg_branch').value.trim() || 'main', path: $('#cfg_path').value.trim() || 'data/contracts.json', token: $('#cfg_token').value.trim() };
+  if (!(tmp.owner && tmp.repo && tmp.token)) return toast('أدخل Owner و Repo و PAT أولاً.', 'warn');
+  busy(true, 'جارٍ اختبار الاتصال…');
+  const saved = S.cfg;
+  try {
+    S.cfg = tmp;
+    const data = await ghLoadData();
+    S.cfg = saved;
+    busy(false);
+    toast(`الاتصال ناجح — تم قراءة ${data.contracts?.length || 0} عقدًا من الملف.`, 'ok');
+  } catch (e) {
+    S.cfg = saved; busy(false);
+    const hints = { 401: 'رمز الوصول (PAT) غير صالح.', 404: 'المستودع أو مسار الملف غير موجود — تحقق من Owner/Repo/المسار والفرع.', 403: 'رمز الوصول لا يملك صلاحية القراءة (Contents: Read).' };
+    toast('فشل الاتصال: ' + (hints[e.status] || e.message), 'err');
+  }
+}
+
+function actClearCfg() {
+  S.cfg = { owner: '', repo: '', branch: 'main', path: 'data/contracts.json', token: '' };
+  LS.set(STORE.cfg, S.cfg);
+  loadData().then(() => { renderAll(); toast('تم مسح الإعدادات — العودة للوضع التجريبي المحلي.', 'info'); });
+}
+
+async function actSaveSys() {
+  if (!isSupervisor()) return toast('المدير العام فقط يعدّل إعدادات المنظومة.', 'err');
+  const designers = $('#sys_designers').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const technicians = $('#sys_technicians').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const warrantyYears = Math.max(1, +$('#sys_warranty').value || 15);
+  const defaultDeliveryDays = Math.min(40, Math.max(15, +$('#sys_delivery').value || 30));
+  if (!designers.length || !technicians.length) return toast('يجب إدخال اسم مصمم واحد وفني واحد على الأقل.', 'err');
+  busy(true, 'جارٍ حفظ إعدادات المنظومة…');
+  try {
+    await saveData((data) => {
+      data.settings = data.settings || {};
+      data.settings.designers = designers;
+      data.settings.technicians = technicians;
+      data.settings.warrantyYears = warrantyYears;
+      data.settings.defaultDeliveryDays = defaultDeliveryDays;
+    }, 'تحديث إعدادات المنظومة (الفريق والضمان ومهلة التسليم)');
+    if ((S.role === 'designer' || S.role === 'technician') && S.person && !(S.role === 'designer' ? designers : technicians).includes(S.person)) {
+      setIdentity(S.role, (S.role === 'designer' ? designers : technicians)[0] || '');
+    }
+    closeAllModals();
+    toast('تم حفظ إعدادات المنظومة بنجاح.', 'ok');
+    renderAll();
+  } catch (err) { toast('فشل الحفظ: ' + err.message, 'err'); }
+  finally { busy(false); }
+}
+
+/* =====================================================================
+   ربط الأحداث + الإقلاع
+   ===================================================================== */
+function bindEvents() {
+  // التبويبات
+  $$('.tabbtn').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+
+  // الأزرار عبر التفويض (event delegation)
+  document.addEventListener('click', (e) => {
+    const close = e.target.closest('[data-close]');
+    if (close) { if (close.id === 'cf_cancel' && S.confirmResolve) { S.confirmResolve(false); S.confirmResolve = null; } closeModal(close); return; }
+
+    const stat = e.target.closest('[data-stat]');
+    if (stat) {
+      const k = stat.dataset.stat;
+      S.filters.stage = S.filters.stage === k ? '' : k;
+      const map = { awaiting_pay: 'awaiting_pay', awaiting_drawing: 'awaiting_drawing', production_shipping: 'production_shipping', warehouse_install: 'warehouse_install', completed: 'completed', all: '' };
+      $('#fltStage').value = map[k] ?? '';
+      renderStats(); renderContracts();
+      return;
+    }
+
+    const quick = e.target.closest('[data-quick]');
+    if (quick) { $('#mSearch').value = quick.dataset.quick; renderSearch(); return; }
+
+    const orole = e.target.closest('[data-orole]');
+    if (orole) {
+      S.obRole = orole.dataset.orole;
+      if (S.obRole === 'designer' || S.obRole === 'technician') openOnboard('person');
+      else { closeOnboard(); setIdentity(S.obRole, ''); }
+      return;
+    }
+    const operson = e.target.closest('[data-operson]');
+    if (operson) { closeOnboard(); setIdentity(S.obRole, operson.dataset.operson); return; }
+
+    const act = e.target.closest('[data-act]');
+    if (!act || act.disabled) return;
+    const id = act.dataset.id;
+    switch (act.dataset.act) {
+      case 'openDetails': actOpenDetails(id); break;
+      case 'openPay': actOpenPay(id); break;
+      case 'openDrawing': actOpenDrawing(id); break;
+      case 'openAssign': actOpenAssign(id); break;
+      case 'openTicket': actOpenTicket(id); break;
+      case 'startShipping': actStartShipping(id); break;
+      case 'arrive': actArrive(id); break;
+      case 'installDone': actInstallDone(id); break;
+      case 'needsFinishing': actNeedsFinishing(id); break;
+      case 'closeFile': actCloseFile(id); break;
+      case 'closeTicket': actCloseTicket(id, act.dataset.tid); break;
+    }
+  });
+
+  // النماذج
+  $('#formNew').addEventListener('submit', actCreateContract);
+  $('#formPayment').addEventListener('submit', actSubmitPayment);
+  $('#formDrawing').addEventListener('submit', actSubmitDrawing);
+  $('#formAssign').addEventListener('submit', actSubmitAssign);
+  $('#formTicket').addEventListener('submit', actSubmitTicket);
+
+  // حساب المتبقي في نموذج العقد الجديد
+  ['nc_total', 'nc_deposit'].forEach(id => $('#' + id).addEventListener('input', () => {
+    const t = +$('#nc_total').value || 0, d = +$('#nc_deposit').value || 0;
+    $('#nc_remaining').textContent = fmtNum(Math.max(0, t - d));
+  }));
+
+  // الفلاتر
+  $('#fltSearch').addEventListener('input', (e) => { S.filters.q = e.target.value; renderContracts(); });
+  $('#fltStage').addEventListener('change', (e) => { S.filters.stage = e.target.value; renderStats(); renderContracts(); });
+  $('#fltDesigner').addEventListener('change', (e) => { S.filters.designer = e.target.value; renderContracts(); });
+  $('#mSearch').addEventListener('input', () => renderSearch());
+
+  // الهوية
+  $('#roleSel').addEventListener('change', (e) => {
+    const r = e.target.value;
+    if (!r) return;
+    if (r === 'designer' || r === 'technician') { S.obRole = r; openOnboard('person'); }
+    else setIdentity(r, '');
+  });
+  $('#personSel').addEventListener('change', (e) => setIdentity(S.role, e.target.value, { silent: true }));
+  $('#btnSwitch').addEventListener('click', () => openOnboard('role'));
+
+  // الإعدادات والتحديث
+  $('#btnSettings').addEventListener('click', openSettings);
+  $('#btnSaveCfg').addEventListener('click', actSaveCfg);
+  $('#btnTestConn').addEventListener('click', actTestConn);
+  $('#btnClearCfg').addEventListener('click', actClearCfg);
+  $('#btnSaveSys').addEventListener('click', actSaveSys);
+  $('#btnRefresh').addEventListener('click', async () => {
+    await loadData();
+    renderAll();
+    toast(S.mode === 'github' ? 'تم جلب أحدث البيانات من المستودع.' : 'تم تحديث البيانات المحلية.', S.mode === 'offline' ? 'warn' : 'info');
+  });
+
+  // تأكيد
+  $('#cf_ok').addEventListener('click', () => { if (S.confirmResolve) { S.confirmResolve(true); S.confirmResolve = null; } closeAllModals(); });
+
+  // إغلاق بـ Escape
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (S.confirmResolve) { S.confirmResolve(false); S.confirmResolve = null; }
+      closeAllModals();
+    }
+  });
+
+  // تحديث تلقائي خفيف في وضع GitHub: طلب مشروط (304 لا يُهدر الحصة) ولا يعمل إلا
+  // عندما تكون الصفحة مرئية ولا توجد نافذة تفاصيل مفتوحة.
+  const autoRefresh = async () => {
+    if (S.mode !== 'github' || !ghCfgReady()) return;
+    if (document.visibilityState !== 'visible') return;
+    if ($('#busy').classList.contains('flex') || S.curId) return;
+    S.lastAutoRefresh = Date.now();
+    try {
+      const changed = await ghLoadDataIfChanged();
+      if (changed) { renderAll(); toast('تم تحديث البيانات من المستودع.', 'info'); }
+    } catch { /* تجاهل أخطاء الشبكة العابرة — ستُعاد المحاولة */ }
+  };
+  setInterval(autoRefresh, 120000);
+
+  // عند العودة إلى التبويب بعد غياب، حدّث فورًا (أفضل من انتظار المؤقّت).
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      const last = S.lastAutoRefresh || 0;
+      if (Date.now() - last > 20000) { S.lastAutoRefresh = Date.now(); autoRefresh(); }
+    }
+  });
+}
+
+/* ------------------------------ الإقلاع ------------------------------ */
+(async function init() {
+  S.cfg = LS.get(STORE.cfg, S.cfg);
+  bindEvents();
+  await loadData();
+  const id = LS.get(STORE.role, null);
+  if (id?.role) setIdentity(id.role, id.person || '', { silent: true });
+  else { renderAll(); openOnboard('role'); }
+  if (id?.role) renderAll();
+})();
+
+

@@ -1,0 +1,19 @@
+{
+  "meta": {
+    "system": "منظومة برج الأسطورة",
+    "version": 1,
+    "lastUpdated": null,
+    "nextNumber": 1,
+    "nextTicket": 1
+  },
+  "settings": {
+    "designers": ["م. أحمد الغامدي", "م. فيصل العنزي", "م. عمر الحارثي", "م. يوسف الزهراني"],
+    "technicians": ["سالم القحطاني", "نواف الدوسري", "بندر الشمري", "تركي المطيري"],
+    "warrantyYears": 15,
+    "defaultDeliveryDays": 30,
+    "shippingDays": 10,
+    "city": "المدينة المنورة",
+    "factory": "القصيم"
+  },
+  "contracts": []
+}

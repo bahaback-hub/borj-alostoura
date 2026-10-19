@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>منظومة برج الأسطورة — إدارة مطابخ المدينة المنورة</title>
+  <meta name="description" content="منظومة برج الأسطورة لإدارة عقود المطابخ: فرع المدينة المنورة ومصنع القصيم — عقود، مستودع ولوجستيات، تركيب وصيانة.">
+  <!--
+    Content-Security-Policy: يحدّ من أثر أي ثغرة XSS على رمز الوصول (PAT) المخزّن في المتصفح.
+    ملاحظة: 'unsafe-inline' مطلوب لأن app.js يُنشئ أنماطًا مضمّنة (شريط التقدّم، التلاشي).
+    لتشديدها لاحقًا: انقل هذه الأنماط إلى أصناف CSS ثم احذف 'unsafe-inline'.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com data:; img-src 'self' data: https:; connect-src 'self' https://api.github.com https://raw.githubusercontent.com; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230A0C10'/%3E%3Ctext x='32' y='44' font-size='32' text-anchor='middle' fill='%23D4A64A' font-family='sans-serif' font-weight='bold'%3Eب%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@700;800;900&family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <!-- Tailwind يُبنى محليًا إلى assets/app.css عبر `npm run build:css` (انظر .github/workflows). -->
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body class="bg-ink-950 text-mist-100 font-body min-h-screen antialiased">
+
+  <!-- ======================= الترويسة ======================= -->
+  <header class="sticky top-0 z-40 bg-ink-950/90 backdrop-blur border-b border-ink-700">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center gap-3">
+      <div class="flex items-center gap-3 me-auto">
+        <div class="w-11 h-11 rounded-xl bg-gradient-to-br from-gold-400 to-gold-600 grid place-items-center shadow-lg shadow-gold-600/20 shrink-0">
+          <i class="fa-solid fa-tower-observation text-ink-950 text-xl"></i>
+        </div>
+        <div>
+          <h1 class="font-head font-extrabold text-lg leading-tight">برج الأسطورة</h1>
+          <p class="text-[11px] text-mist-400 leading-tight">منظومة إدارة المطابخ — فرع المدينة المنورة | مصنع القصيم</p>
+        </div>
+      </div>
+
+      <span id="modeBadge" class="chip border-ink-600 bg-ink-800 text-mist-300"><i class="fa-solid fa-flask"></i> جارٍ التحميل…</span>
+
+      <div class="flex items-center gap-2">
+        <button id="btnRefresh" class="btn-ghost !px-3" title="تحديث البيانات"><i class="fa-solid fa-rotate-right"></i><span class="hidden md:inline">تحديث</span></button>
+        <button id="btnSwitch" class="btn-ghost !px-3" title="تغيير الهوية / الدور"><i class="fa-solid fa-id-badge"></i><span class="hidden md:inline">تبديل الدور</span></button>
+        <button id="btnSettings" class="btn-ghost !px-3" title="الإعدادات"><i class="fa-solid fa-gear"></i></button>
+      </div>
+
+      <div class="flex items-center gap-2 w-full sm:w-auto">
+        <select id="roleSel" class="input !py-2 !w-auto text-xs font-bold" title="اختر الدور">
+          <option value="">— اختر الدور —</option>
+          <option value="supervisor">المدير العام / المشرف</option>
+          <option value="designer">مصمم</option>
+          <option value="warehouse">مدير المستودع</option>
+          <option value="technician">فني تركيب</option>
+        </select>
+        <select id="personSel" class="input !py-2 !w-auto text-xs hidden" title="اختر الاسم"></select>
+        <span id="identityChip" class="chip border-gold-500/30 bg-gold-500/10 text-gold-300 hidden"><i class="fa-solid fa-user-check"></i> —</span>
+      </div>
+    </div>
+
+    <!-- التبويبات -->
+    <nav class="max-w-7xl mx-auto px-4 pb-2 flex gap-2 overflow-x-auto">
+      <button class="tabbtn active" data-tab="contracts"><i class="fa-solid fa-file-contract"></i> العقود</button>
+      <button class="tabbtn" data-tab="new"><i class="fa-solid fa-circle-plus"></i> عقد جديد</button>
+      <button class="tabbtn" data-tab="warehouse"><i class="fa-solid fa-warehouse"></i> المستودع واللوجستيات</button>
+      <button class="tabbtn" data-tab="maintenance"><i class="fa-solid fa-magnifying-glass"></i> البحث في الصيانة</button>
+    </nav>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-4 py-6">
+
+    <!-- ======================= تبويب: العقود ======================= -->
+    <section id="tab-contracts" class="fade-in">
+      <div id="statsRow" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 mb-5"></div>
+
+      <div class="card p-4 mb-5">
+        <div class="flex flex-wrap gap-3 items-center">
+          <div class="relative flex-1 min-w-[220px]">
+            <i class="fa-solid fa-magnifying-glass absolute top-1/2 -translate-y-1/2 start-3.5 text-mist-500 text-sm"></i>
+            <input id="fltSearch" class="input ps-10" placeholder="بحث سريع: اسم العميل / رقم الجوال / رقم العقد…">
+          </div>
+          <select id="fltStage" class="input !w-auto min-w-[190px]">
+            <option value="">كل الحالات</option>
+            <option value="awaiting_pay">بانتظار السداد (عربون/كامل)</option>
+            <option value="awaiting_drawing">بانتظار رفع الرسمة</option>
+            <option value="production_shipping">قيد التصنيع والشحن</option>
+            <option value="warehouse_install">المستودع والتركيب</option>
+            <option value="completed">مكتملة</option>
+          </select>
+          <select id="fltDesigner" class="input !w-auto min-w-[150px]"><option value="">كل المصممين</option></select>
+        </div>
+      </div>
+
+      <div id="contractsList" class="grid grid-cols-1 lg:grid-cols-2 gap-4"></div>
+      <div id="contractsEmpty" class="hidden text-center py-16 text-mist-400">
+        <i class="fa-regular fa-folder-open text-5xl mb-4 text-ink-500"></i>
+        <p class="font-bold">لا توجد عقود مطابقة للفلاتر الحالية</p>
+        <p class="text-sm mt-1">جرّب تعديل البحث أو أنشئ عقدًا جديدًا من تبويب «عقد جديد».</p>
+      </div>
+    </section>
+
+    <!-- ======================= تبويب: عقد جديد ======================= -->
+    <section id="tab-new" class="hidden fade-in">
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <div class="card p-6 lg:col-span-2">
+          <h2 class="sec-title mb-1"><i class="fa-solid fa-file-circle-plus text-gold-400 me-2"></i>فتح عقد جديد</h2>
+          <p class="text-xs text-mist-400 mb-5">يقوم المصمم بفتح العقد وتسجيل بيانات العميل والمبالغ المتفق عليها. يبدأ العقد بحالة «بانتظار دفع العربون».</p>
+          <div id="ncNotice" class="hidden mb-4 rounded-xl border border-amber-400/30 bg-amber-400/10 text-amber-300 text-xs font-bold px-4 py-3">
+            <i class="fa-solid fa-triangle-exclamation me-1"></i> صلاحية فتح العقود متاحة للمصممين والمدير العام فقط. بدّل دورك من الأعلى.
+          </div>
+          <form id="formNew" class="grid grid-cols-1 md:grid-cols-2 gap-4" novalidate>
+            <div><label class="label">اسم العميل *</label><input id="nc_name" class="input" placeholder="مثال: محمد بن سعد العتيبي"></div>
+            <div><label class="label">رقم الجوال *</label><input id="nc_phone" class="input num text-left" dir="ltr" placeholder="05xxxxxxxx" inputmode="tel"></div>
+            <div class="md:col-span-2"><label class="label">العنوان في المدينة المنورة *</label><input id="nc_address" class="input" placeholder="الحي، الشارع، أقرب معلم…"></div>
+            <div><label class="label">اسم المصمم *</label><select id="nc_designer" class="input"></select></div>
+            <div><label class="label">ملاحظات</label><input id="nc_notes" class="input" placeholder="اختياري"></div>
+            <div><label class="label">المبلغ الإجمالي (ر.س) *</label><input id="nc_total" type="number" min="0" step="100" class="input num text-left" dir="ltr" placeholder="0"></div>
+            <div><label class="label">مبلغ العربون (ر.س)</label><input id="nc_deposit" type="number" min="0" step="100" class="input num text-left" dir="ltr" placeholder="0"></div>
+            <div class="md:col-span-2 flex flex-wrap items-center justify-between gap-3 bg-ink-800/70 border border-ink-600 rounded-xl px-4 py-3">
+              <span class="text-xs text-mist-300">المتبقي بعد العربون: <b id="nc_remaining" class="num text-gold-300">0</b> ر.س</span>
+              <button type="submit" class="btn-gold"><i class="fa-solid fa-check"></i> إنشاء العقد</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card p-6">
+          <h3 class="sec-title mb-4"><i class="fa-solid fa-route text-gold-400 me-2"></i>دورة حياة العقد</h3>
+          <ol class="space-y-4 text-sm">
+            <li class="flex gap-3"><span class="w-7 h-7 shrink-0 rounded-full bg-gold-500/15 text-gold-300 grid place-items-center text-xs font-bold">1</span><div><b>إنشاء العقد</b><p class="text-xs text-mist-400 mt-0.5">المصمم يسجّل بيانات العميل والمبالغ.</p></div></li>
+            <li class="flex gap-3"><span class="w-7 h-7 shrink-0 rounded-full bg-gold-500/15 text-gold-300 grid place-items-center text-xs font-bold">2</span><div><b>تتبع الدفع</b><p class="text-xs text-mist-400 mt-0.5">عربون ← سداد كامل. لا يُفتح رفع الرسمة إلا بعد التسديد الكامل.</p></div></li>
+            <li class="flex gap-3"><span class="w-7 h-7 shrink-0 rounded-full bg-gold-500/15 text-gold-300 grid place-items-center text-xs font-bold">3</span><div><b>رفع رسمة المصنع</b><p class="text-xs text-mist-400 mt-0.5">بعد الرفع يبدأ عدّاد التسليم تلقائيًا (15–40 يومًا).</p></div></li>
+            <li class="flex gap-3"><span class="w-7 h-7 shrink-0 rounded-full bg-gold-500/15 text-gold-300 grid place-items-center text-xs font-bold">4</span><div><b>الشحن والمستودع</b><p class="text-xs text-mist-400 mt-0.5">تصنيع وشحن من القصيم (~10 أيام) ثم تأكيد الوصول لمستودع المدينة.</p></div></li>
+            <li class="flex gap-3"><span class="w-7 h-7 shrink-0 rounded-full bg-gold-500/15 text-gold-300 grid place-items-center text-xs font-bold">5</span><div><b>التوزيع والتركيب</b><p class="text-xs text-mist-400 mt-0.5">إسناد الطلب لفني التركيب، ثم تأكيد إنجاز التركيب.</p></div></li>
+            <li class="flex gap-3"><span class="w-7 h-7 shrink-0 rounded-full bg-gold-500/15 text-gold-300 grid place-items-center text-xs font-bold">6</span><div><b>الاعتماد والضمان</b><p class="text-xs text-mist-400 mt-0.5">المشرف فقط ينهي الملف، وضمان 15 سنة يبدأ من تاريخ التركيب.</p></div></li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= تبويب: المستودع واللوجستيات ======================= -->
+    <section id="tab-warehouse" class="hidden fade-in">
+      <div id="whIntro" class="card p-4 mb-5 flex items-center gap-3 text-sm text-mist-300 border-gold-500/20 bg-gold-500/5">
+        <i class="fa-solid fa-circle-info text-gold-400 text-lg"></i>
+        <span>متابعة التصنيع والشحن من مصنع <b class="text-mist-100">القصيم</b> إلى مستودع <b class="text-mist-100">المدينة المنورة</b> — مدة الشحن المتوقعة <b class="text-gold-300 num">~10 أيام</b>. يؤكد مدير المستودع الوصول، ثم يُسند الطلب لفني تركيب.</span>
+      </div>
+      <div id="whWrap" class="grid grid-cols-1 xl:grid-cols-2 gap-5"></div>
+      <div id="whEmpty" class="hidden text-center py-16 text-mist-400">
+        <i class="fa-solid fa-box-open text-5xl mb-4 text-ink-500"></i>
+        <p class="font-bold">لا توجد طلبات في المسار اللوجستي حاليًا</p>
+      </div>
+    </section>
+
+    <!-- ======================= تبويب: البحث في الصيانة ======================= -->
+    <section id="tab-maintenance" class="hidden fade-in">
+      <div class="card p-6 mb-5">
+        <h2 class="sec-title mb-1"><i class="fa-solid fa-screwdriver-wrench text-gold-400 me-2"></i>أرشيف الصيانة وضمان 15 سنة</h2>
+        <p class="text-xs text-mist-400 mb-4">ابحث برقم الجوال أو رقم العقد أو اسم العميل لعرض كافة تفاصيل العقد، وحالة الضمان، وفتح تذكرة صيانة جديدة فورًا.</p>
+        <div class="relative">
+          <i class="fa-solid fa-magnifying-glass absolute top-1/2 -translate-y-1/2 start-4 text-mist-500"></i>
+          <input id="mSearch" class="input !py-3.5 ps-11 text-base" placeholder="اكتب رقم الجوال / رقم العقد / اسم العميل…">
+        </div>
+        <div class="flex flex-wrap gap-2 mt-3 text-[11px] text-mist-500">
+          <span>أمثلة سريعة:</span>
+          <button class="chip border-ink-600 bg-ink-800 hover:border-gold-500/40 transition" data-quick="0551234567">0551234567</button>
+          <button class="chip border-ink-600 bg-ink-800 hover:border-gold-500/40 transition" data-quick="BRJ-2026-0003">BRJ-2026-0003</button>
+          <button class="chip border-ink-600 bg-ink-800 hover:border-gold-500/40 transition" data-quick="منى">منى العسيري</button>
+        </div>
+      </div>
+      <div id="mResults" class="space-y-5"></div>
+      <div id="mHint" class="text-center py-14 text-mist-400">
+        <i class="fa-solid fa-file-magnifying-glass text-5xl mb-4 text-ink-500"></i>
+        <p class="font-bold">ابدأ بالبحث لعرض ملفات العملاء</p>
+        <p class="text-sm mt-1">يتم البحث في كل العقود — المفتوحة والمغلقة — وبطريقة متسامحة مع الهمزات والتاء المربوطة.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="max-w-7xl mx-auto px-4 py-8 text-center text-[11px] text-mist-500 border-t border-ink-800 mt-6">
+    <p><b class="text-mist-400">منظومة برج الأسطورة</b> — إصدار 1.0 • قاعدة البيانات: ملف JSON داخل مستودع GitHub عبر GitHub API</p>
+    <p class="mt-1">فرع المدينة المنورة | مصنع القصيم — جميع البيانات تُحدَّث فورًا أمام جميع الأجهزة المتصلة.</p>
+  </footer>
+
+  <!-- ======================= نافذة: تفاصيل العقد ======================= -->
+  <div id="m-details" class="modal fixed inset-0 z-[60] hidden items-center justify-center p-3 sm:p-4">
+    <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" data-close></div>
+    <div class="card relative w-full max-w-3xl max-h-[92vh] overflow-y-auto p-5 sm:p-6">
+      <div class="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <h3 class="font-head font-extrabold text-lg" id="dt_name">—</h3>
+          <div class="flex flex-wrap items-center gap-2 mt-1.5">
+            <span id="dt_id" class="chip border-ink-500 bg-ink-700 text-mist-200 num"></span>
+            <span id="dt_stage"></span>
+            <span id="dt_countdown"></span>
+          </div>
+        </div>
+        <button class="btn-ghost !px-3 !py-2" data-close title="إغلاق"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div id="dt_body" class="space-y-4"></div>
+    </div>
+  </div>
+
+  <!-- ======================= نافذة: تسجيل دفعة ======================= -->
+  <div id="m-payment" class="modal fixed inset-0 z-[60] hidden items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" data-close></div>
+    <div class="card relative w-full max-w-md p-6">
+      <h3 class="font-head font-extrabold mb-1"><i class="fa-solid fa-cash-register text-gold-400 me-2"></i>تسجيل دفعة</h3>
+      <p id="pay_contract" class="text-xs text-mist-400 mb-4">—</p>
+      <form id="formPayment" class="space-y-4">
+        <div><label class="label">نوع الدفعة *</label>
+          <select id="pay_kind" class="input">
+            <option value="عربون">عربون</option>
+            <option value="دفعة تحت الحساب">دفعة تحت الحساب</option>
+            <option value="سداد نهائي">سداد نهائي (استكمال كامل المبلغ)</option>
+          </select>
+        </div>
+        <div><label class="label">المبلغ (ر.س) *</label><input id="pay_amount" type="number" min="1" step="1" class="input num text-left" dir="ltr"></div>
+        <div><label class="label">ملاحظة</label><input id="pay_note" class="input" placeholder="تحويل بنكي / نقدي / مدى…"></div>
+        <p class="text-[11px] text-mist-500">عند اكتمال إجمالي المدفوعات يتحول العقد تلقائيًا إلى «مسدد بالكامل» وينفتح زر رفع رسمة المصنع.</p>
+        <div class="flex gap-2 pt-1">
+          <button type="submit" class="btn-gold flex-1"><i class="fa-solid fa-check"></i> حفظ الدفعة</button>
+          <button type="button" class="btn-ghost" data-close>إلغاء</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ======================= نافذة: رفع رسمة المصنع ======================= -->
+  <div id="m-drawing" class="modal fixed inset-0 z-[60] hidden items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" data-close></div>
+    <div class="card relative w-full max-w-md p-6">
+      <h3 class="font-head font-extrabold mb-1"><i class="fa-solid fa-file-import text-gold-400 me-2"></i>رفع رسمة المصنع</h3>
+      <p id="dr_contract" class="text-xs text-mist-400 mb-4">—</p>
+      <div id="dr_lockWarn" class="hidden mb-4 rounded-xl border border-rose-400/30 bg-rose-400/10 text-rose-300 text-xs font-bold px-4 py-3">
+        <i class="fa-solid fa-lock me-1"></i> قفل الأمان: رفع الرسمة معطّل حتى يصبح العقد «مسددًا بالكامل».
+      </div>
+      <div id="dr_supNote" class="hidden mb-4 rounded-xl border border-gold-400/30 bg-gold-400/10 text-gold-300 text-xs font-bold px-4 py-3">
+        <i class="fa-solid fa-user-shield me-1"></i> أنت مسجّل كمدير عام — لديك تجاوز لقفل السداد (يُسجَّل في سجل العقد).
+      </div>
+      <form id="formDrawing" class="space-y-4">
+        <div><label class="label">ملف الرسمة (صورة / PDF — حتى 900KB للرفع المباشر إلى المستودع)</label>
+          <input id="dr_file" type="file" accept="image/*,.pdf" class="input !py-2 file:me-3 file:rounded-lg file:border-0 file:bg-ink-700 file:text-mist-200 file:px-3 file:py-1.5 file:text-xs file:cursor-pointer">
+        </div>
+        <div class="text-center text-[11px] text-mist-500">— أو —</div>
+        <div><label class="label">رابط خارجي للرسمة (Drive / Dropbox…)</label><input id="dr_link" class="input text-left" dir="ltr" placeholder="https://…"></div>
+        <div><label class="label">مهلة التسليم من تاريخ الرفع (تبدأ العدّاد تلقائيًا) *</label>
+          <select id="dr_days" class="input"></select>
+        </div>
+        <p class="text-[11px] text-mist-500">ملاحظة: ملفات أكبر من 900KB ارفعها عبر الرابط الخارجي. بعد الرفع تبدأ مرحلة التصنيع في القصيم.</p>
+        <div class="flex gap-2 pt-1">
+          <button type="submit" class="btn-gold flex-1"><i class="fa-solid fa-cloud-arrow-up"></i> رفع وبدء العدّاد</button>
+          <button type="button" class="btn-ghost" data-close>إلغاء</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ======================= نافذة: إسناد فني ======================= -->
+  <div id="m-assign" class="modal fixed inset-0 z-[60] hidden items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" data-close></div>
+    <div class="card relative w-full max-w-md p-6">
+      <h3 class="font-head font-extrabold mb-1"><i class="fa-solid fa-user-gear text-gold-400 me-2"></i>إسناد الطلب لفني تركيب</h3>
+      <p id="as_contract" class="text-xs text-mist-400 mb-4">—</p>
+      <form id="formAssign" class="space-y-4">
+        <div><label class="label">اسم الفني *</label><select id="as_tech" class="input"></select></div>
+        <div><label class="label">ملاحظة للفني</label><input id="as_note" class="input" placeholder="اختياري — مثل: التنسيق مع العميل مسبقًا"></div>
+        <p class="text-[11px] text-mist-500">سيظهر للفني اسم العميل ورقم جواله وعنوانه مع زر تأكيد التركيب.</p>
+        <div class="flex gap-2 pt-1">
+          <button type="submit" class="btn-gold flex-1"><i class="fa-solid fa-check"></i> إسناد</button>
+          <button type="button" class="btn-ghost" data-close>إلغاء</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ======================= نافذة: تذكرة صيانة ======================= -->
+  <div id="m-ticket" class="modal fixed inset-0 z-[60] hidden items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" data-close></div>
+    <div class="card relative w-full max-w-md p-6">
+      <h3 class="font-head font-extrabold mb-1"><i class="fa-solid fa-screwdriver-wrench text-gold-400 me-2"></i>فتح تذكرة صيانة</h3>
+      <p id="tk_contract" class="text-xs text-mist-400 mb-4">—</p>
+      <form id="formTicket" class="space-y-4">
+        <div><label class="label">وصف المشكلة / الطلب *</label><textarea id="tk_desc" rows="3" class="input" placeholder="مثال: ضبط مفصلات، مشكلة في سحب الدرج…"></textarea></div>
+        <div><label class="label">الفني المسؤول (اختياري)</label><select id="tk_tech" class="input"></select></div>
+        <div class="flex gap-2 pt-1">
+          <button type="submit" class="btn-gold flex-1"><i class="fa-solid fa-check"></i> فتح التذكرة</button>
+          <button type="button" class="btn-ghost" data-close>إلغاء</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ======================= نافذة: تأكيد ======================= -->
+  <div id="m-confirm" class="modal fixed inset-0 z-[70] hidden items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/75 backdrop-blur-sm"></div>
+    <div class="card relative w-full max-w-sm p-6 text-center">
+      <i id="cf_icon" class="fa-solid fa-circle-question text-3xl text-gold-400 mb-3"></i>
+      <h3 id="cf_title" class="font-head font-extrabold mb-2">تأكيد</h3>
+      <p id="cf_msg" class="text-sm text-mist-300 mb-5">—</p>
+      <div class="flex gap-2">
+        <button id="cf_ok" class="btn-gold flex-1">تأكيد</button>
+        <button id="cf_cancel" class="btn-ghost flex-1" data-close>إلغاء</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================= نافذة: الإعدادات ======================= -->
+  <div id="m-settings" class="modal fixed inset-0 z-[60] hidden items-center justify-center p-3 sm:p-4">
+    <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" data-close></div>
+    <div class="card relative w-full max-w-2xl max-h-[92vh] overflow-y-auto p-6">
+      <div class="flex items-start justify-between gap-3 mb-5">
+        <h3 class="font-head font-extrabold text-lg"><i class="fa-solid fa-gear text-gold-400 me-2"></i>الإعدادات</h3>
+        <button class="btn-ghost !px-3 !py-2" data-close title="إغلاق"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+
+      <div class="card !bg-ink-800/70 p-5 mb-4">
+        <h4 class="font-bold text-sm mb-1"><i class="fa-brands fa-github me-2 text-mist-300"></i>الاتصال بمستودع GitHub <span class="text-[10px] text-mist-500 font-normal">(تُحفظ محليًا في هذا المتصفح فقط)</span></h4>
+        <p class="text-[11px] text-mist-500 mb-4">اتركها فارغة للعمل في «الوضع التجريبي المحلي». لتفعيل قاعدة البيانات الحقيقية أدخل بيانات المستودع ورمز وصول (PAT) بصلاحية Contents: Read and write.</p>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div><label class="label">مالك المستودع (Owner)</label><input id="cfg_owner" class="input text-left" dir="ltr" placeholder="username"></div>
+          <div><label class="label">اسم المستودع (Repo)</label><input id="cfg_repo" class="input text-left" dir="ltr" placeholder="borj-alostoura"></div>
+          <div><label class="label">الفرع (Branch)</label><input id="cfg_branch" class="input text-left" dir="ltr" placeholder="main"></div>
+          <div><label class="label">مسار ملف البيانات</label><input id="cfg_path" class="input text-left" dir="ltr" placeholder="data/contracts.json"></div>
+          <div class="sm:col-span-2"><label class="label">رمز الوصول الشخصي (GitHub PAT)</label><input id="cfg_token" type="password" class="input text-left" dir="ltr" placeholder="github_pat_… / ghp_…"></div>
+        </div>
+        <div class="flex flex-wrap gap-2 mt-4">
+          <button id="btnSaveCfg" class="btn-gold"><i class="fa-solid fa-save"></i> حفظ الاتصال</button>
+          <button id="btnTestConn" class="btn-ghost"><i class="fa-solid fa-plug-circle-check"></i> اختبار الاتصال</button>
+          <button id="btnClearCfg" class="btn-ghost !text-rose-300"><i class="fa-solid fa-trash-can"></i> مسح والعودة للوضع التجريبي</button>
+        </div>
+      </div>
+
+      <div class="card !bg-ink-800/70 p-5">
+        <h4 class="font-bold text-sm mb-1"><i class="fa-solid fa-sliders me-2 text-mist-300"></i>إعدادات المنظومة <span class="text-[10px] text-mist-500 font-normal">(تُحفظ في المستودع — للمدير العام فقط)</span></h4>
+        <div id="sysGate" class="hidden mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 text-amber-300 text-xs font-bold px-4 py-3">
+          <i class="fa-solid fa-lock me-1"></i> التعديل متاح للمدير العام فقط. يمكنك المعاينة دون حفظ.
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+          <div><label class="label">أسماء المصممين (اسم في كل سطر)</label><textarea id="sys_designers" rows="4" class="input text-sm"></textarea></div>
+          <div><label class="label">أسماء فنيي التركيب (اسم في كل سطر)</label><textarea id="sys_technicians" rows="4" class="input text-sm"></textarea></div>
+          <div><label class="label">مدة الضمان (سنوات)</label><input id="sys_warranty" type="number" min="1" class="input num text-left" dir="ltr"></div>
+          <div><label class="label">مهلة التسليم الافتراضية (يوم: 15–40)</label><input id="sys_delivery" type="number" min="15" max="40" class="input num text-left" dir="ltr"></div>
+        </div>
+        <button id="btnSaveSys" class="btn-gold mt-4"><i class="fa-solid fa-save"></i> حفظ إعدادات المنظومة</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================= موجه اختيار الهوية ======================= -->
+  <div id="onboard" class="fixed inset-0 z-[65] hidden items-center justify-center bg-ink-950/95 backdrop-blur p-4 overflow-y-auto">
+    <div class="w-full max-w-lg text-center py-8">
+      <div class="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-gold-400 to-gold-600 grid place-items-center shadow-xl shadow-gold-600/25 mb-4">
+        <i class="fa-solid fa-tower-observation text-ink-950 text-3xl"></i>
+      </div>
+      <h2 class="font-head font-extrabold text-2xl mb-1">أهلاً بك في منظومة برج الأسطورة</h2>
+      <p class="text-sm text-mist-400 mb-6" id="ob_sub">حدّد هويتك للدخول إلى المنظومة — يمكنك تغييرها في أي وقت من الأعلى.</p>
+      <div id="ob_roles" class="grid grid-cols-2 gap-3">
+        <button class="card p-5 hover:border-gold-500/50 transition group" data-orole="supervisor"><i class="fa-solid fa-user-shield text-2xl text-gold-400 mb-2"></i><p class="font-bold text-sm">المدير العام / المشرف</p><p class="text-[11px] text-mist-500 mt-1">صلاحيات كاملة وإنهاء الملفات</p></button>
+        <button class="card p-5 hover:border-gold-500/50 transition group" data-orole="designer"><i class="fa-solid fa-pen-ruler text-2xl text-gold-400 mb-2"></i><p class="font-bold text-sm">مصمم</p><p class="text-[11px] text-mist-500 mt-1">فتح العقود ورفع الرسمات</p></button>
+        <button class="card p-5 hover:border-gold-500/50 transition group" data-orole="warehouse"><i class="fa-solid fa-warehouse text-2xl text-gold-400 mb-2"></i><p class="font-bold text-sm">مدير المستودع</p><p class="text-[11px] text-mist-500 mt-1">الوصول والإسناد للفنيين</p></button>
+        <button class="card p-5 hover:border-gold-500/50 transition group" data-orole="technician"><i class="fa-solid fa-screwdriver-wrench text-2xl text-gold-400 mb-2"></i><p class="font-bold text-sm">فني تركيب</p><p class="text-[11px] text-mist-500 mt-1">مهامي وتأكيد التركيب</p></button>
+      </div>
+      <div id="ob_persons" class="hidden grid-cols-2 gap-3"></div>
+    </div>
+  </div>
+
+  <!-- ======================= طبقة التحميل والتنبيهات ======================= -->
+  <div id="busy" class="fixed inset-0 z-[90] hidden items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div class="card px-8 py-6 text-center">
+      <i class="fa-solid fa-circle-notch fa-spin text-3xl text-gold-400 mb-3"></i>
+      <p id="busyText" class="text-sm font-bold text-mist-200">جارٍ المعالجة…</p>
+    </div>
+  </div>
+  <div id="toasts" class="fixed bottom-4 right-4 z-[80] flex flex-col gap-2 w-[calc(100%-2rem)] max-w-xs"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

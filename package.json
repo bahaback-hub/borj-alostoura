@@ -1,0 +1,20 @@
+{
+  "name": "borj-alostoura",
+  "version": "1.0.0",
+  "private": true,
+  "description": "منظومة برج الأسطورة — إدارة عقود مطابخ المدينة المنورة ومصنع القصيم (تطبيق ويب ثابت يستخدم GitHub API كقاعدة بيانات)",
+  "license": "MIT",
+  "scripts": {
+    "build:css": "tailwindcss -i ./src/input.css -o ./assets/app.css --minify",
+    "watch:css": "tailwindcss -i ./src/input.css -o ./assets/app.css --watch",
+    "lint": "eslint .",
+    "check:json": "node scripts/check-json.mjs",
+    "check": "npm run check:json && npm run lint && npm run test:smoke",
+    "test:smoke": "node scripts/smoke-test.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.15.0",
+    "eslint": "^9.15.0",
+    "tailwindcss": "^3.4.17"
+  }
+}

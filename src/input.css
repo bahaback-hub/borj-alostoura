@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .card { @apply bg-ink-850 border border-ink-700 rounded-2xl shadow-lg shadow-black/30; }
+  .btn-gold { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold bg-gradient-to-l from-gold-600 to-gold-400 text-ink-950 hover:brightness-110 active:scale-[.98] shadow-md shadow-gold-600/20 transition-all duration-150 select-none; }
+  .btn-ghost { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold bg-ink-700/60 text-mist-200 hover:bg-ink-600 border border-ink-600 transition-all duration-150 select-none; }
+  .btn-danger { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold bg-rose-600/90 text-white hover:bg-rose-500 transition-all duration-150 select-none; }
+  .btn-emerald { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold bg-emerald-600/90 text-white hover:bg-emerald-500 transition-all duration-150 select-none; }
+  .btn-sky { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold bg-sky-600/90 text-white hover:bg-sky-500 transition-all duration-150 select-none; }
+  .btn-gold:disabled, .btn-ghost:disabled, .btn-danger:disabled, .btn-emerald:disabled, .btn-sky:disabled { @apply opacity-40 cursor-not-allowed saturate-50 active:scale-100; }
+  .input { @apply w-full bg-ink-800 border border-ink-600 rounded-xl px-3.5 py-2.5 text-sm text-mist-100 placeholder-mist-500 outline-none focus:border-gold-500/60 focus:ring-2 focus:ring-gold-500/20 transition; }
+  .label { @apply block text-xs font-bold text-mist-400 mb-1.5; }
+  .chip { @apply inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1 rounded-full border leading-5; }
+  .tabbtn { @apply flex items-center gap-2 px-4 py-3 rounded-xl text-sm font-bold text-mist-400 hover:text-mist-200 hover:bg-ink-800/70 whitespace-nowrap transition; }
+  .tabbtn.active { @apply bg-ink-800 text-gold-400 border border-ink-600; }
+  .sec-title { @apply font-head font-extrabold text-base text-mist-100; }
+}
+
+/* Custom scrollbars and small utilities — kept as plain CSS. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: #0E1117; }
+::-webkit-scrollbar-thumb { background: #2A3344; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #3A4559; }
+.num { font-feature-settings: "tnum"; font-variant-numeric: tabular-nums; }
+select.input option { background-color: #161B26; color: #EEF1F6; }
+.fade-in { animation: fadeIn .25s ease-out; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }

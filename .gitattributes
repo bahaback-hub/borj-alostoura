@@ -1,0 +1,14 @@
+# Normalize line endings to LF in the repository so builds are identical
+# across Windows (local) and Linux (CI). Prevents spurious diffs in the
+# "committed CSS is up to date" CI check.
+* text=auto eol=lf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
+*.apk binary

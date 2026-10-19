@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Build Tailwind CSS
+        run: npm run build:css
+      - name: Verify committed CSS is up to date
+        run: |
+          if ! git diff --quiet -- assets/app.css; then
+            echo "::error::assets/app.css لا يطابق المصدر. شغّل 'npm run build:css' وارفع الناتج."
+            git --no-pager diff --stat -- assets/app.css
+            exit 1
+          fi
+      - name: Validate JSON and run smoke test
+        run: npm run check:json && npm run test:smoke
+      - name: Lint JavaScript
+        run: npm run lint
