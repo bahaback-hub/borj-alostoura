@@ -10,7 +10,7 @@
     ملاحظة: 'unsafe-inline' مطلوب لأن app.js يُنشئ أنماطًا مضمّنة (شريط التقدّم، التلاشي).
     لتشديدها لاحقًا: انقل هذه الأنماط إلى أصناف CSS ثم احذف 'unsafe-inline'.
   -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com data:; img-src 'self' data: https:; connect-src 'self' https://api.github.com https://raw.githubusercontent.com; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com data:; img-src 'self' data: https:; connect-src 'self' https://api.github.com https://raw.githubusercontent.com https://kxgqwkhqogfzggunxogt.supabase.co wss://kxgqwkhqogfzggunxogt.supabase.co; object-src 'none'; base-uri 'self'; form-action 'self'">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230A0C10'/%3E%3Ctext x='32' y='44' font-size='32' text-anchor='middle' fill='%23D4A64A' font-family='sans-serif' font-weight='bold'%3Eب%3C/text%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -39,6 +39,7 @@
       <div class="flex items-center gap-2">
         <button id="btnRefresh" class="btn-ghost !px-3" title="تحديث البيانات"><i class="fa-solid fa-rotate-right"></i><span class="hidden md:inline">تحديث</span></button>
         <button id="btnSwitch" class="btn-ghost !px-3" title="تغيير الهوية / الدور"><i class="fa-solid fa-id-badge"></i><span class="hidden md:inline">تبديل الدور</span></button>
+        <button id="btnLogout" class="btn-ghost !px-3 hidden" title="تسجيل الخروج"><i class="fa-solid fa-right-from-bracket"></i><span class="hidden md:inline">خروج</span></button>
         <button id="btnSettings" class="btn-ghost !px-3" title="الإعدادات"><i class="fa-solid fa-gear"></i></button>
       </div>
 
@@ -427,6 +428,23 @@
       </div>
       <h2 class="font-head font-extrabold text-2xl mb-1">أهلاً بك في منظومة برج الأسطورة</h2>
       <p class="text-sm text-mist-400 mb-6" id="ob_sub">حدّد هويتك للدخول إلى المنظومة — يمكنك تغييرها في أي وقت من الأعلى.</p>
+
+      <!-- شاشة تسجيل الدخول السحابي (Supabase) -->
+      <form id="loginForm" class="text-start space-y-3 mb-4">
+        <div>
+          <label class="label" for="login_email">البريد الإلكتروني</label>
+          <input id="login_email" type="email" class="input text-left" dir="ltr" placeholder="you@example.com" autocomplete="username" required>
+        </div>
+        <div>
+          <label class="label" for="login_password">كلمة المرور</label>
+          <input id="login_password" type="password" class="input text-left" dir="ltr" placeholder="••••••••" autocomplete="current-password" required>
+        </div>
+        <button type="submit" class="btn-gold w-full"><i class="fa-solid fa-right-to-bracket"></i> تسجيل الدخول</button>
+        <p id="login_err" class="text-xs text-rose-300 hidden"></p>
+      </form>
+
+      <div class="flex items-center gap-3 mb-4"><span class="h-px bg-ink-600 flex-1"></span><span class="text-[11px] text-mist-500">أو الدخول المحلي (وضع تجريبي)</span><span class="h-px bg-ink-600 flex-1"></span></div>
+
       <div id="ob_roles" class="grid grid-cols-2 gap-3">
         <button class="card p-5 hover:border-gold-500/50 transition group" data-orole="supervisor"><i class="fa-solid fa-user-shield text-2xl text-gold-400 mb-2"></i><p class="font-bold text-sm">المدير العام / المشرف</p><p class="text-[11px] text-mist-500 mt-1">صلاحيات كاملة وإنهاء الملفات</p></button>
         <button class="card p-5 hover:border-gold-500/50 transition group" data-orole="designer"><i class="fa-solid fa-pen-ruler text-2xl text-gold-400 mb-2"></i><p class="font-bold text-sm">مصمم</p><p class="text-[11px] text-mist-500 mt-1">فتح العقود ورفع الرسمات</p></button>

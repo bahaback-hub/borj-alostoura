@@ -29,7 +29,7 @@ const ROLE_DEFS = {
   technician: { label: 'فني تركيب', icon: 'fa-screwdriver-wrench' }
 };
 
-const STORE = { cfg: 'borj_cfg_v1', role: 'borj_role_v1', demo: 'borj_demo_v1', cache: 'borj_cache_v1' };
+const STORE = { cfg: 'borj_cfg_v1', role: 'borj_role_v1', demo: 'borj_demo_v1', cache: 'borj_cache_v1', sbSession: 'borj_sb_session_v1' };
 
 /* ---------------------------------------------------------------------------
    بوابة الفنيين: رمز كتابة مشترك يُستخدم عند دخول الفني بلا هوية.
@@ -42,6 +42,17 @@ const STORE = { cfg: 'borj_cfg_v1', role: 'borj_role_v1', demo: 'borj_demo_v1', 
 const TECH_SHARED_TOKEN = 'PUT_YOUR_FINE_GRAINED_PAT_HERE';
 const TECH_OWNER = 'bahaback-hub';
 const TECH_REPO = 'borj-alostoura';
+
+/* ---------------------------------------------------------------------------
+   Supabase: قاعدة البيانات السحابية الأساسية للمنظومة.
+   - SUPABASE_ANON: المفتاح العام (publishable) — آمن للعرض في الواجهة، محميّ بسياسات RLS.
+   - الجدول store: صفّ واحد (id='main') يخزّن كامل بيانات المنظومة في عمود data (jsonb).
+   - جدول profiles: يربط كل حساب مُسجّل بدوره واسمه.
+   ⚠️ لا تضع أبدًا المفتاح السرّي (service_role) هنا — فهو عام ومكشوف.
+   --------------------------------------------------------------------------- */
+const SUPABASE_URL = 'https://kxgqwkhqogfzggunxogt.supabase.co';
+const SUPABASE_ANON = 'sb_publishable_JNBU3uv3-hoU8fHS3Wqg7w_Ca2T4QdS';
+const SB_STORE_ID = 'main';
 const MAX_UPLOAD_BYTES = 900 * 1024; // حد الرفع المباشر إلى GitHub Contents API
 // GitHub Contents API يرفض الملفات الكبيرة (>~1MB عبر هذا المسار)، ولأن ملف البيانات
 // يُقرأ ويُكتب بالكامل في كل عملية فنحذّر عند الاقتراب من الحد لتفادي فقدان الحفظ.
@@ -83,7 +94,8 @@ const S = {
   cfg: { owner: '', repo: '', branch: 'main', path: 'data/contracts.json', token: '' },
   role: null, person: '',
   data: null, sha: null, etag: null,
-  mode: 'demo',            // demo | github | offline
+  mode: 'demo',            // demo | github | offline | supabase
+  sbSession: null,         // جلسة Supabase الحالية
   tab: 'contracts',
   curId: null,             // العقد المفتوح في نافذة التفاصيل
   confirmResolve: null,
@@ -93,7 +105,8 @@ const S = {
 
 const LS = {
   get(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v === null || v === undefined ? d : v; } catch { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} }
 };
 
 /* ------------------------- صلاحيات (الأدوار) ------------------------- */
@@ -113,7 +126,138 @@ const remainingOf = (c) => Math.max(0, (c.payment?.total || 0) - paidOf(c));
 const byName = () => S.techPortal ? 'فني تركيب (بوابة الفنيين)' : `${ROLE_DEFS[S.role]?.label || S.role}${S.person ? ' — ' + S.person : ''}`;
 
 /* =====================================================================
-   طبقة GitHub API (قاعدة البيانات)
+   طبقة Supabase (قاعدة البيانات السحابية)
+   ===================================================================== */
+function sbReady() { return !!(SUPABASE_URL && SUPABASE_ANON); }
+
+/** رأس مصادقة Supabase — يستخدم رمز الجلسة إن وُجد، وإلا المفتاح العام. */
+function sbHeaders(extra = {}) {
+  const token = S.sbSession?.access_token || SUPABASE_ANON;
+  return { 'apikey': SUPABASE_ANON, 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', ...extra };
+}
+
+/** استدعاء REST على Supabase — يجدّد الجلسة تلقائيًا عند 401 ثم يعيد المحاولة مرة. */
+async function sbFetch(path, opts = {}, _retried = false) {
+  const res = await fetch(`${SUPABASE_URL}${path}`, { ...opts, headers: sbHeaders(opts.headers || {}) });
+  if (res.status === 401 && !_retried && S.sbSession?.refresh_token) {
+    if (await sbRefresh()) return sbFetch(path, opts, true);
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    let msg = `Supabase ${res.status}`;
+    try { const j = JSON.parse(body); msg = j.msg || j.message || j.error_description || msg; } catch { /* نص غير JSON */ }
+    const err = new Error(msg);
+    err.status = res.status; err.body = body;
+    throw err;
+  }
+  if (res.status === 204) return null;
+  const txt = await res.text();
+  return txt ? JSON.parse(txt) : null;
+}
+
+/** تسجيل الدخول بالإيميل وكلمة المرور — يحفظ الجلسة محليًا ويُعيد المستخدم. */
+async function sbSignIn(email, password) {
+  const j = await sbFetch('/auth/v1/token?grant_type=password', {
+    method: 'POST',
+    body: JSON.stringify({ email, password })
+  });
+  S.sbSession = { access_token: j.access_token, refresh_token: j.refresh_token, user: j.user, expires_at: Date.now() + ((j.expires_in || 3600) * 1000), at: nowISO() };
+  LS.set(STORE.sbSession, S.sbSession);
+  return j.user;
+}
+
+/** تجديد رمز الجلسة المنتهي باستخدام refresh_token. تُعيد true عند النجاح. */
+async function sbRefresh() {
+  const rt = S.sbSession?.refresh_token;
+  if (!rt) return false;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: { 'apikey': SUPABASE_ANON, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: rt })
+    });
+    if (!res.ok) return false;
+    const j = await res.json();
+    S.sbSession = { ...S.sbSession, access_token: j.access_token, refresh_token: j.refresh_token || rt, expires_at: Date.now() + ((j.expires_in || 3600) * 1000) };
+    LS.set(STORE.sbSession, S.sbSession);
+    return true;
+  } catch { return false; }
+}
+
+/** يضمن وجود رمز صالح — يجدّد إن انتهى. */
+async function sbEnsureToken() {
+  if (!S.sbSession?.access_token) return false;
+  if (S.sbSession.expires_at && Date.now() > S.sbSession.expires_at - 60000) {
+    return await sbRefresh();
+  }
+  return true;
+}
+
+/** تسجيل الخروج ومسح الجلسة. */
+async function sbSignOut() {
+  try {
+    if (S.sbSession?.access_token) {
+      await fetch(`${SUPABASE_URL}/auth/v1/logout`, { method: 'POST', headers: sbHeaders() });
+    }
+  } catch { /* تجاهل أخطاء الشبكة عند الخروج */ }
+  S.sbSession = null;
+  LS.del(STORE.sbSession);
+}
+
+/** قراءة صف البيانات الرئيسي من جدول store. تُعيد كائن البيانات أو null. */
+async function sbLoadData() {
+  const rows = await sbFetch(`/rest/v1/store?id=eq.${SB_STORE_ID}&select=data`);
+  if (!rows || !rows.length) return null;
+  return rows[0].data;
+}
+
+/** كتابة صف البيانات الرئيسي (upsert) في جدول store. */
+async function sbPutData(data) {
+  const json = JSON.stringify(data, null, 2);
+  const bytes = new TextEncoder().encode(json).length;
+  if (bytes > MAX_DATA_BYTES) {
+    const err = new Error(`حجم البيانات (${fmtNum(Math.round(bytes / 1024))} كيلوبايت) يتجاوز الحد (${fmtNum(Math.round(MAX_DATA_BYTES / 1024))} كيلوبايت).`);
+    err.code = 'DATA_TOO_LARGE';
+    throw err;
+  }
+  await sbFetch('/rest/v1/store?on_conflict=id', {
+    method: 'POST',
+    headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({ id: SB_STORE_ID, data, updated_at: nowISO() })
+  });
+}
+
+/** جلب ملف المستخدم (الدور والاسم) من جدول profiles. */
+async function sbGetProfile(userId) {
+  const rows = await sbFetch(`/rest/v1/profiles?id=eq.${userId}&select=role,person`);
+  if (!rows || !rows.length) return null;
+  return rows[0];
+}
+
+/** رفع ملف رسمة إلى Supabase Storage (دلو 'drawings') — تُعيد الرابط العام. */
+async function sbUploadDrawing(fileName, blob, contentType = 'application/octet-stream') {
+  const path = `drawings/${encodeURIComponent(fileName)}`;
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${path}`, {
+    method: 'POST',
+    headers: {
+      'apikey': SUPABASE_ANON,
+      'Authorization': `Bearer ${S.sbSession?.access_token || SUPABASE_ANON}`,
+      'Content-Type': contentType,
+      'x-upsert': 'true'
+    },
+    body: blob
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    const err = new Error(`رفع الرسمة فشل (${res.status})`);
+    err.status = res.status; err.body = body;
+    throw err;
+  }
+  return `${SUPABASE_URL}/storage/v1/object/public/${path}`;
+}
+
+/* =====================================================================
+   طبقة GitHub API (قاعدة بيانات احتياطية — تبقى كخيار ثانٍ)
    ===================================================================== */
 function ghCfgReady() { return !!(S.cfg.owner && S.cfg.repo && S.cfg.token); }
 
@@ -228,6 +372,16 @@ async function ghUploadDrawing(fileName, base64Content, contractId) {
  * mutator: دالة تعدّل كائن البيانات في مكانها.
  */
 async function saveData(mutator, commitMsg) {
+  if (S.mode === 'supabase' && sbReady()) {
+    const fresh = (await sbLoadData()) || FALLBACK_SEED();   // جلب أحدث نسخة (دمج آمن)
+    mutator(fresh);
+    fresh.meta = fresh.meta || {};
+    fresh.meta.lastUpdated = nowISO();
+    await sbPutData(fresh);
+    S.data = fresh;
+    LS.set(STORE.cache, { at: nowISO(), data: fresh }); // نسخة احتياطية محلية
+    return;
+  }
   if (S.mode === 'github' && ghCfgReady()) {
     let lastErr = null;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -283,7 +437,20 @@ async function fetchLocalSeed() {
 async function loadData(silent = false) {
   if (!silent) busy(true, 'جارٍ تحميل البيانات…');
   try {
-    if (ghCfgReady()) {
+    if (S.sbSession?.access_token && sbReady()) {
+      // الوضع السحابي (Supabase) — الأساس
+      S.mode = 'supabase';
+      try {
+        const data = await sbLoadData();
+        S.data = data || FALLBACK_SEED();
+        if (!data) await sbPutData(S.data);   // تهيئة الصف أول مرة
+        LS.set(STORE.cache, { at: nowISO(), data: S.data });
+      } catch {
+        const cached = LS.get(STORE.cache, null);
+        if (cached?.data) { S.data = cached.data; S.mode = 'offline'; if (!silent) toast('تعذر الاتصال بالسحابة — عرض نسخة محفوظة (قراءة فقط).', 'warn'); }
+        else { S.data = FALLBACK_SEED(); if (!silent) toast('تعذر الاتصال بالسحابة — تم البدء ببيانات فارغة.', 'warn'); }
+      }
+    } else if (ghCfgReady()) {
       S.mode = 'github';
       try {
         const data = await ghLoadData();
@@ -1056,7 +1223,8 @@ function renderNewTab() {
 function renderModeBadge() {
   const badge = $('#modeBadge');
   if (!badge) return;
-  if (S.mode === 'github') badge.outerHTML = `<span id="modeBadge" class="chip bg-emerald-500/15 text-emerald-300 border-emerald-400/20"><i class="fa-brands fa-github"></i> متصل: ${esc(S.cfg.owner)}/${esc(S.cfg.repo)}</span>`;
+  if (S.mode === 'supabase') badge.outerHTML = `<span id="modeBadge" class="chip bg-emerald-500/15 text-emerald-300 border-emerald-400/20"><i class="fa-solid fa-cloud"></i> متصل: قاعدة البيانات السحابية</span>`;
+  else if (S.mode === 'github') badge.outerHTML = `<span id="modeBadge" class="chip bg-emerald-500/15 text-emerald-300 border-emerald-400/20"><i class="fa-brands fa-github"></i> متصل: ${esc(S.cfg.owner)}/${esc(S.cfg.repo)}</span>`;
   else if (S.mode === 'offline') badge.outerHTML = `<span id="modeBadge" class="chip bg-amber-500/15 text-amber-300 border-amber-400/20"><i class="fa-solid fa-triangle-exclamation"></i> غير متصل — نسخة مؤقتة (قراءة فقط)</span>`;
   else badge.outerHTML = `<span id="modeBadge" class="chip bg-gold-500/15 text-gold-300 border-gold-400/20"><i class="fa-solid fa-flask"></i> وضع تجريبي محلي</span>`;
 }
@@ -1068,6 +1236,13 @@ function renderHeader() {
     chip.classList.remove('hidden');
     chip.innerHTML = `<i class="fa-solid ${ROLE_DEFS[S.role].icon}"></i> ${ROLE_DEFS[S.role].label}${S.person ? ' — ' + esc(S.person) : ''}`;
   } else if (!S.techPortal) chip.classList.add('hidden');
+  // في الوضع السحابي: تُخفى قائمة تبديل الدور ويظهر زر الخروج.
+  const cloud = !!(S.sbSession?.access_token && S.mode === 'supabase');
+  const rs = $('#roleSel'), ps = $('#personSel'), sw = $('#btnSwitch'), lo = $('#btnLogout');
+  if (rs) rs.classList.toggle('hidden', cloud);
+  if (ps && cloud) ps.classList.add('hidden');
+  if (sw) sw.classList.toggle('hidden', cloud);
+  if (lo) lo.classList.toggle('hidden', !cloud);
 }
 
 function renderAll() {
@@ -1134,7 +1309,7 @@ function applyPortalChrome() {
   const on = S.techPortal;
   const headerNav = document.querySelector('header nav');
   if (headerNav) headerNav.classList.toggle('hidden', on);
-  ['#roleSel', '#personSel', '#btnSettings', '#btnSwitch'].forEach(s => { const el = $(s); if (el) el.classList.toggle('hidden', on); });
+  ['#roleSel', '#personSel', '#btnSettings', '#btnSwitch', '#btnLogout'].forEach(s => { const el = $(s); if (el) el.classList.toggle('hidden', on); });
   ['#tab-contracts', '#tab-new', '#tab-warehouse', '#tab-maintenance'].forEach(s => { const el = $(s); if (el) el.classList.toggle('hidden', on); });
   const portal = $('#techPortal');
   if (portal) portal.classList.toggle('hidden', !on);
@@ -1418,14 +1593,16 @@ async function actSubmitDrawing(e) {
   if (!file && !link) return toast('اختر ملف الرسمة أو أدخل رابطًا خارجيًا.', 'err');
   if (file && file.size > MAX_UPLOAD_BYTES) return toast('حجم الملف أكبر من 900KB — استخدم رابطًا خارجيًا (Drive / Dropbox).', 'err');
 
-  busy(true, file && S.mode === 'github' ? 'جارٍ رفع ملف الرسمة إلى المستودع…' : 'جارٍ حفظ بيانات الرسمة…');
+  busy(true, file ? 'جارٍ رفع ملف الرسمة…' : 'جارٍ حفظ بيانات الرسمة…');
   try {
     let url = '', fname = '';
     if (file) {
       const ext = (file.name.split('.').pop() || 'bin').toLowerCase();
       fname = `${id}-${Date.now()}.${ext}`.replace(/[^\w.-]/g, '_');
       const b64 = await fileToB64(file);
-      if (S.mode === 'github' && ghCfgReady()) {
+      if (S.mode === 'supabase' && S.sbSession?.access_token) {
+        url = await sbUploadDrawing(fname, file, file.type || 'application/octet-stream');
+      } else if (S.mode === 'github' && ghCfgReady()) {
         url = await ghUploadDrawing(fname, b64, id);
       } else {
         url = ''; // الوضع التجريبي: بيانات وصفية فقط
@@ -1436,7 +1613,7 @@ async function actSubmitDrawing(e) {
       const cc = data.contracts.find(x => x.id === id);
       const uploadedAt = nowISO();
       cc.drawing = {
-        source: file ? (S.mode === 'github' ? 'github' : 'local') : 'link',
+        source: file ? (S.mode === 'supabase' ? 'supabase' : S.mode === 'github' ? 'github' : 'local') : 'link',
         name, url: url || link,
         uploadedAt, uploadedBy: byName(),
         deadlineDays: days,
@@ -1671,17 +1848,75 @@ function actOpenDetails(id) {
 /* =====================================================================
    الهوية والأدوار
    ===================================================================== */
+/* =====================================================================
+   تسجيل الدخول السحابي (Supabase Auth)
+   ===================================================================== */
+function showLoginError(msg) {
+  const el = $('#login_err');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.classList.toggle('hidden', !msg);
+}
+
+/** تعبئة دور/اسم المستخدم من جدول profiles واعتماده. */
+async function applyCloudIdentity() {
+  let prof = null;
+  try { prof = await sbGetProfile(S.sbSession?.user?.id); } catch { /* جدول profiles قد لا يوجد بعد */ }
+  const role = prof?.role || 'supervisor';
+  S.role = role;
+  S.person = prof?.person || '';
+  LS.set(STORE.role, { role: S.role, person: S.person });
+  closeOnboard();
+  await loadData();
+  renderAll();
+  toast(`مرحبًا ${S.person || ROLE_DEFS[role]?.label || ''} — أنت متصل بقاعدة البيانات السحابية.`, 'ok');
+}
+
+/** تنفيذ تسجيل الدخول بالإيميل وكلمة المرور. */
+async function doCloudLogin(e) {
+  if (e) e.preventDefault();
+  const email = $('#login_email').value.trim();
+  const password = $('#login_password').value;
+  showLoginError('');
+  if (!email || !password) return showLoginError('أدخل البريد الإلكتروني وكلمة المرور.');
+  const btn = $('#loginForm button[type="submit"]');
+  if (btn) btn.disabled = true;
+  busy(true, 'جارٍ تسجيل الدخول…');
+  try {
+    await sbSignIn(email, password);
+    $('#login_password').value = '';
+    busy(false);
+    await applyCloudIdentity();
+  } catch (err) {
+    busy(false);
+    if (btn) btn.disabled = false;
+    const msg = /Invalid login|invalid_grant|400/i.test(err.message || '') ? 'البريد الإلكتروني أو كلمة المرور غير صحيحة.' : ('تعذر تسجيل الدخول: ' + (err.message || ''));
+    showLoginError(msg);
+  }
+}
+
+/** تسجيل الخروج والعودة لشاشة الدخول. */
+async function doCloudLogout() {
+  await sbSignOut();
+  S.role = null; S.person = ''; S.data = null;
+  LS.del(STORE.role);
+  $('#roleSel').value = '';
+  renderAll();
+  openOnboard('login');
+  toast('تم تسجيل الخروج.', 'info');
+}
+
 function setIdentity(role, person, { silent = false } = {}) {
   S.role = role || null;
   S.person = person || '';
   LS.set(STORE.role, { role: S.role, person: S.person });
-  $('#roleSel').value = S.role || '';
+  const rs = $('#roleSel'); if (rs) rs.value = S.role || '';
   const ps = $('#personSel');
-  if (S.role === 'designer' || S.role === 'technician') {
+  if (ps && (S.role === 'designer' || S.role === 'technician')) {
     const list = (S.data?.settings?.[S.role === 'designer' ? 'designers' : 'technicians']) || [];
     ps.classList.remove('hidden');
     ps.innerHTML = list.map(n => `<option value="${esc(n)}" ${n === S.person ? 'selected' : ''}>${esc(n)}</option>`).join('');
-  } else { ps.classList.add('hidden'); }
+  } else if (ps) { ps.classList.add('hidden'); }
   if (!silent) toast(`تم تبديل الدور: ${ROLE_DEFS[S.role]?.label}${S.person ? ' — ' + S.person : ''}`, 'info');
   renderAll();
 }
@@ -1689,7 +1924,15 @@ function setIdentity(role, person, { silent = false } = {}) {
 function openOnboard(step = 'role') {
   const ob = $('#onboard');
   ob.classList.remove('hidden'); ob.classList.add('flex');
-  const roles = $('#ob_roles'), persons = $('#ob_persons');
+  const roles = $('#ob_roles'), persons = $('#ob_persons'), login = $('#loginForm');
+  const isLogin = step === 'login';
+  if (login) login.classList.toggle('hidden', !isLogin);
+  if (isLogin) {
+    roles.classList.add('hidden'); persons.classList.add('hidden'); persons.classList.remove('grid');
+    const sub = $('#ob_sub'); if (sub) sub.textContent = 'سجّل الدخول بحسابك للوصول إلى المنظومة.';
+    setTimeout(() => $('#login_email')?.focus(), 50);
+    return;
+  }
   if (step === 'role') {
     roles.classList.remove('hidden'); persons.classList.add('hidden'); persons.classList.remove('grid');
   } else {
@@ -1879,6 +2122,8 @@ function bindEvents() {
   });
   $('#personSel').addEventListener('change', (e) => setIdentity(S.role, e.target.value, { silent: true }));
   $('#btnSwitch').addEventListener('click', () => openOnboard('role'));
+  $('#loginForm').addEventListener('submit', doCloudLogin);
+  $('#btnLogout').addEventListener('click', doCloudLogout);
 
   // الإعدادات والتحديث
   $('#btnSettings').addEventListener('click', openSettings);
@@ -1889,7 +2134,7 @@ function bindEvents() {
   $('#btnRefresh').addEventListener('click', async () => {
     await loadData();
     renderAll();
-    toast(S.mode === 'github' ? 'تم جلب أحدث البيانات من المستودع.' : 'تم تحديث البيانات المحلية.', S.mode === 'offline' ? 'warn' : 'info');
+    toast(S.mode === 'supabase' ? 'تم جلب أحدث البيانات من قاعدة البيانات السحابية.' : S.mode === 'github' ? 'تم جلب أحدث البيانات من المستودع.' : 'تم تحديث البيانات المحلية.', S.mode === 'offline' ? 'warn' : 'info');
   });
 
   // تأكيد
@@ -1906,13 +2151,19 @@ function bindEvents() {
   // تحديث تلقائي خفيف في وضع GitHub: طلب مشروط (304 لا يُهدر الحصة) ولا يعمل إلا
   // عندما تكون الصفحة مرئية ولا توجد نافذة تفاصيل مفتوحة.
   const autoRefresh = async () => {
-    if (S.mode !== 'github' || !ghCfgReady()) return;
     if (document.visibilityState !== 'visible') return;
     if ($('#busy').classList.contains('flex') || S.curId) return;
     S.lastAutoRefresh = Date.now();
     try {
-      const changed = await ghLoadDataIfChanged();
-      if (changed) { renderAll(); toast('تم تحديث البيانات من المستودع.', 'info'); }
+      if (S.mode === 'supabase' && S.sbSession?.access_token) {
+        const fresh = await sbLoadData();
+        if (fresh && JSON.stringify(fresh.meta?.lastUpdated) !== JSON.stringify(S.data?.meta?.lastUpdated)) {
+          S.data = fresh; renderAll(); toast('تم تحديث البيانات من السحابة.', 'info');
+        }
+      } else if (S.mode === 'github' && ghCfgReady()) {
+        const changed = await ghLoadDataIfChanged();
+        if (changed) { renderAll(); toast('تم تحديث البيانات من المستودع.', 'info'); }
+      }
     } catch { /* تجاهل أخطاء الشبكة العابرة — ستُعاد المحاولة */ }
   };
   setInterval(autoRefresh, 120000);
@@ -1929,15 +2180,23 @@ function bindEvents() {
 /* ------------------------------ الإقلاع ------------------------------ */
 (async function init() {
   S.cfg = LS.get(STORE.cfg, S.cfg);
+  S.sbSession = LS.get(STORE.sbSession, null);
   bindEvents();
   // رابط مختصر لبوابة الفنيين: افتح الموقع مع ?tech=1 للدخول المباشر.
   const wantTech = new URLSearchParams(location.search).get('tech') === '1';
   if (wantTech) { enterTechnicianPortal(); return; }
-  await loadData();
-  const id = LS.get(STORE.role, null);
-  if (id?.role) setIdentity(id.role, id.person || '', { silent: true });
-  else { renderAll(); openOnboard('role'); }
-  if (id?.role) renderAll();
+
+  // الوضع السحابي: إن وُجدت جلسة محفوظة، استأنف الدخول مباشرة (مع تجديد الرمز عند الحاجة).
+  if (S.sbSession?.access_token && sbReady()) {
+    const ok = await sbEnsureToken();
+    if (ok && S.sbSession?.access_token) { await applyCloudIdentity(); return; }
+    await sbSignOut();
+  }
+
+  // بلا جلسة: أظهر شاشة الدخول السحابي.
+  await loadData(true);
+  renderAll();
+  openOnboard(sbReady() ? 'login' : 'role');
 })();
 
 
