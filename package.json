@@ -9,9 +9,10 @@
     "watch:css": "tailwindcss -i ./src/input.css -o ./assets/app.css --watch",
     "lint": "eslint .",
     "check:json": "node scripts/check-json.mjs",
-    "check": "npm run check:json && npm run lint && npm run test:smoke && npm run test:portal",
+    "check": "npm run check:json && npm run lint && npm run test:smoke && npm run test:portal && npm run test:report",
     "test:smoke": "node scripts/smoke-test.mjs",
-    "test:portal": "node scripts/portal-test.mjs"
+    "test:portal": "node scripts/portal-test.mjs",
+    "test:report": "node scripts/report-test.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.15.0",

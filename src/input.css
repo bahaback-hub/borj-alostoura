@@ -27,3 +27,16 @@
 select.input option { background-color: #161B26; color: #EEF1F6; }
 .fade-in { animation: fadeIn .25s ease-out; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* طباعة تقرير الإدارة — يُخفي كل ما لا يخصّ اللوحة عند الطباعة/التصدير PDF. */
+@media print {
+  body { background: #fff !important; color: #000 !important; }
+  header, nav, #statsRow, #tab-new, #tab-warehouse, #tab-maintenance, .no-print, #onboard, #toast, .modal-backdrop, #techPortal { display: none !important; }
+  #tab-contracts { display: block !important; }
+  #reportPanel { display: block !important; }
+  .card { border: 1px solid #cbd5e1 !important; box-shadow: none !important; background: #fff !important; }
+  #reportPanel h2, #reportPanel h3 { color: #000 !important; }
+  .text-mist-300, .text-mist-400, .text-mist-500, .text-mist-100, .text-mist-200 { color: #334155 !important; }
+  #reportPanel * { color: #0f172a !important; }
+  #reportPanel .num { color: #0f172a !important; }
+}

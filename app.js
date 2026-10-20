@@ -102,6 +102,7 @@ const canPay = () => ['supervisor', 'designer'].includes(S.role);
 const canCreate = () => ['supervisor', 'designer'].includes(S.role);
 const canLogistics = () => ['supervisor', 'warehouse'].includes(S.role);
 const canClose = () => isSupervisor();
+const canViewReport = () => isSupervisor();
 const canTicket = () => ['supervisor', 'warehouse', 'technician'].includes(S.role);
 const canUploadDrawing = (c) => isSupervisor() || paidOf(c) >= (c.payment?.total || 0);
 // مدير التركيب (البوابة) يرى كل العقود المسندة؛ الفني العادي (بدور technician واسم) يرى ما أُسند له فقط.
@@ -373,6 +374,303 @@ function renderStats() {
       <div class="flex items-center justify-between mb-2"><i class="fa-solid ${x.i} ${x.c}"></i><span class="text-2xl font-head font-extrabold num ${x.c}">${x.v}</span></div>
       <p class="text-[11px] text-mist-400 font-bold">${x.t}</p>
     </button>`).join('');
+}
+
+/* =====================================================================
+   لوحة تقارير الإدارة (Dashboard) — تُحسب كل المؤشرات من البيانات الحالية.
+   ===================================================================== */
+const STALE_DAYS = 14; // عدد الأيام بلا أي حدث يُعدّ العقد بعده "راكدًا"
+const REPORT_STAGE_ORDER = ['new', 'deposit_paid', 'fully_paid', 'in_production', 'shipping', 'arrived_warehouse', 'assigned', 'needs_finishing', 'installation_done', 'completed'];
+
+/** آخر حدث زمني لعقد (من السجل أو تاريخ الإنشاء). تُعيد ISO أو ''. */
+function lastActivityOf(c) {
+  let last = c.createdAt || '';
+  for (const h of (c.history || [])) if (h?.at && h.at > last) last = h.at;
+  return last;
+}
+
+/** عدد الأيام منذ آخر حدث (أو Infinity عند غياب التاريخ). */
+function staleDaysOf(c) {
+  const last = lastActivityOf(c);
+  if (!last) return Infinity;
+  const d = daysBetween(last, nowISO());
+  return Number.isFinite(d) ? d : Infinity;
+}
+
+/** حالة مهلة التسليم: safe | soon | late | none. */
+function deadlineStateOf(c) {
+  const dl = c.drawing?.deadline;
+  if (!dl || c.stage === 'completed') return 'none';
+  const left = daysBetween(nowISO(), dl); // موجب = متبقٍ، سالب = متأخر
+  if (!Number.isFinite(left)) return 'none';
+  if (left < 0) return 'late';
+  if (left <= 5) return 'soon';
+  return 'safe';
+}
+
+/** متوسط زمن الدورة بالأيام (من الإنشاء حتى إغلاق الملف) للعقود المكتملة. تُعيد null إن لا توجد بيانات. */
+function avgCycleDays(cs) {
+  const done = cs.filter(c => c.closure?.closedAt && c.createdAt);
+  if (!done.length) return null;
+  const total = done.reduce((s, c) => {
+    const d = daysBetween(c.createdAt, c.closure.closedAt);
+    return s + (Number.isFinite(d) ? Math.max(0, d) : 0);
+  }, 0);
+  return Math.round(total / done.length);
+}
+
+/** تجميع كل أرقام التقرير في كائن واحد. */
+function computeReport() {
+  const cs = S.data?.contracts || [];
+  const totalValue = cs.reduce((s, c) => s + (c.payment?.total || 0), 0);
+  const collected = cs.reduce((s, c) => s + paidOf(c), 0);
+  const remaining = Math.max(0, totalValue - collected);
+  const collectRate = totalValue > 0 ? Math.round((collected / totalValue) * 100) : 0;
+
+  const byStage = {};
+  for (const k of REPORT_STAGE_ORDER) byStage[k] = 0;
+  for (const c of cs) if (byStage[c.stage] !== undefined) byStage[c.stage]++; else byStage[c.stage] = (byStage[c.stage] || 0) + 1;
+
+  // مصممون: عدد + قيمة + متوسط زمن الإنجاز (للمكتملة)
+  const designers = {};
+  for (const c of cs) {
+    const d = c.designer || 'غير محدد';
+    designers[d] = designers[d] || { name: d, count: 0, value: 0, doneDurations: [] };
+    designers[d].count++;
+    designers[d].value += (c.payment?.total || 0);
+    if (c.closure?.closedAt && c.createdAt) {
+      const days = daysBetween(c.createdAt, c.closure.closedAt);
+      if (Number.isFinite(days)) designers[d].doneDurations.push(Math.max(0, days));
+    }
+  }
+  const designersArr = Object.values(designers).map(d => ({
+    name: d.name, count: d.count, value: d.value,
+    avgDays: d.doneDurations.length ? Math.round(d.doneDurations.reduce((s, x) => s + x, 0) / d.doneDurations.length) : null
+  })).sort((a, b) => b.count - a.count);
+
+  // فنيون
+  const techs = {};
+  for (const c of cs) {
+    if (!c.technician?.name) continue;
+    const t = c.technician.name;
+    techs[t] = techs[t] || { name: t, total: 0, done: 0, finishing: 0 };
+    techs[t].total++;
+    if (c.stage === 'installation_done' || c.stage === 'completed') techs[t].done++;
+    if (c.stage === 'needs_finishing') techs[t].finishing++;
+  }
+  const techsArr = Object.values(techs).sort((a, b) => b.total - a.total);
+
+  // لوجستيات (قمع)
+  const logistics = {
+    production: cs.filter(c => c.stage === 'in_production').length,
+    shipping: cs.filter(c => c.stage === 'shipping').length,
+    warehouse: cs.filter(c => c.stage === 'arrived_warehouse').length,
+    assigned: cs.filter(c => ['assigned', 'needs_finishing'].includes(c.stage)).length,
+    installed: cs.filter(c => c.stage === 'installation_done').length,
+    completed: cs.filter(c => c.stage === 'completed').length
+  };
+
+  // مهل
+  let late = 0, soon = 0, safe = 0;
+  for (const c of cs) {
+    const st = deadlineStateOf(c);
+    if (st === 'late') late++; else if (st === 'soon') soon++; else if (st === 'safe') safe++;
+  }
+
+  // تحتاج انتباه
+  const attention = [];
+  for (const c of cs) {
+    if (c.stage === 'completed') continue;
+    const reasons = [];
+    if (deadlineStateOf(c) === 'late') reasons.push('تجاوزت مهلة التسليم');
+    else if (deadlineStateOf(c) === 'soon') reasons.push('اقتربت مهلة التسليم');
+    if (staleDaysOf(c) >= STALE_DAYS) reasons.push(`راكد منذ ${Math.floor(staleDaysOf(c))} يومًا`);
+    if (remainingOf(c) > 0 && ['fully_paid', 'in_production', 'shipping', 'arrived_warehouse', 'assigned', 'needs_finishing', 'installation_done'].includes(c.stage))
+      reasons.push(`متبقٍ غير محصّل: ${fmtMoney(remainingOf(c))}`);
+    if (reasons.length) attention.push({ c, reasons });
+  }
+  attention.sort((a, b) => {
+    const rank = (r) => r.some(x => x.includes('تجاوزت')) ? 0 : r.some(x => x.includes('راكد')) ? 1 : r.some(x => x.includes('اقتربت')) ? 2 : 3;
+    return rank(a.reasons) - rank(b.reasons);
+  });
+
+  // ضمان وصيانة
+  const warrantyActive = cs.filter(c => c.warranty?.until && new Date(c.warranty.until) > new Date()).length;
+  let openTickets = 0, closedTickets = 0;
+  for (const c of cs) for (const t of (c.maintenance || [])) { if (t.status === 'open') openTickets++; else closedTickets++; }
+
+  // آخر النشاطات
+  const activity = [];
+  for (const c of cs) for (const h of (c.history || [])) activity.push({ at: h.at, by: h.by, text: h.text, id: c.id });
+  activity.sort((a, b) => (b.at || '').localeCompare(a.at || ''));
+  const recent = activity.slice(0, 10);
+
+  return {
+    count: cs.length, totalValue, collected, remaining, collectRate,
+    byStage, designersArr, techsArr, logistics, late, soon, safe,
+    attention, warrantyActive, openTickets, closedTickets, recent,
+    avgCycle: avgCycleDays(cs)
+  };
+}
+
+/** شريط تقدم أفقي بسيط (CSS). */
+function reportBar(label, value, max, tone = 'gold', extra = '') {
+  const pct = max > 0 ? Math.round((value / max) * 100) : 0;
+  const tones = { gold: 'bg-gold-500', sky: 'bg-sky-500', emerald: 'bg-emerald-500', amber: 'bg-amber-500', rose: 'bg-rose-500', indigo: 'bg-indigo-500', cyan: 'bg-cyan-500', violet: 'bg-violet-500' };
+  return `
+    <div class="mb-2.5">
+      <div class="flex justify-between text-xs mb-1"><span class="text-mist-300 font-bold">${esc(label)}</span><span class="num text-mist-400">${extra || fmtNum(value)}</span></div>
+      <div class="h-2 rounded-full bg-ink-700 overflow-hidden"><div class="${tones[tone] || 'bg-gold-500'} h-full rounded-full" style="width:${pct}%"></div></div>
+    </div>`;
+}
+
+/** حلقة SVG لتوزيع المراحل. */
+function reportDonut(segments) {
+  const total = segments.reduce((s, x) => s + x.value, 0);
+  const R = 54, C = 2 * Math.PI * R;
+  if (!total) return '<p class="text-xs text-mist-500">لا توجد بيانات.</p>';
+  let offset = 0;
+  const arcs = segments.filter(x => x.value > 0).map(x => {
+    const frac = x.value / total;
+    const len = frac * C;
+    const el = `<circle cx="70" cy="70" r="${R}" fill="none" stroke="${x.color}" stroke-width="18" stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-offset}" transform="rotate(-90 70 70)"></circle>`;
+    offset += len;
+    return el;
+  }).join('');
+  const legend = segments.filter(x => x.value > 0).map(x => `
+    <li class="flex items-center gap-2 text-[11px]"><span class="w-3 h-3 rounded-sm inline-block" style="background:${x.color}"></span><span class="text-mist-300 flex-1">${esc(x.label)}</span><b class="num text-mist-100">${x.value}</b></li>`).join('');
+  return `
+  <div class="flex flex-col sm:flex-row items-center gap-4">
+    <svg viewBox="0 0 140 140" class="w-32 h-32 shrink-0">
+      <circle cx="70" cy="70" r="${R}" fill="none" stroke="#1e293b" stroke-width="18"></circle>
+      ${arcs}
+      <text x="70" y="66" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="800">${fmtNum(total)}</text>
+      <text x="70" y="84" text-anchor="middle" fill="#94a3b8" font-size="10">عقد</text>
+    </svg>
+    <ul class="space-y-1 flex-1 w-full">${legend}</ul>
+  </div>`;
+}
+
+function renderReport() {
+  const panel = $('#reportPanel');
+  if (!panel) return;
+  if (!canViewReport()) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+
+  const r = computeReport();
+  $('#rep_kpi').innerHTML = [
+    { t: 'إجمالي قيمة العقود', v: fmtMoney(r.totalValue), i: 'fa-sack-dollar', c: 'text-mist-100' },
+    { t: 'المحصَّل', v: fmtMoney(r.collected), i: 'fa-hand-holding-dollar', c: 'text-emerald-300' },
+    { t: 'المتبقي غير المحصَّل', v: fmtMoney(r.remaining), i: 'fa-hourglass-half', c: 'text-gold-300' },
+    { t: 'نسبة التحصيل', v: r.collectRate + '%', i: 'fa-percent', c: 'text-sky-300' },
+    { t: 'إجمالي العقود', v: fmtNum(r.count), i: 'fa-layer-group', c: 'text-mist-200' },
+    { t: 'متوسط زمن الدورة', v: r.avgCycle == null ? '—' : fmtNum(r.avgCycle) + ' يوم', i: 'fa-clock', c: 'text-violet-300' }
+  ].map(x => `
+    <div class="card !bg-ink-800/70 p-4">
+      <div class="flex items-center justify-between mb-1"><i class="fa-solid ${x.i} ${x.c}"></i></div>
+      <p class="text-lg font-head font-extrabold num ${x.c}">${x.v}</p>
+      <p class="text-[11px] text-mist-400 font-bold mt-0.5">${x.t}</p>
+    </div>`).join('');
+
+  // حلقة المراحل
+  const stageColors = ['#64748b', '#f59e0b', '#38bdf8', '#6366f1', '#8b5cf6', '#22d3ee', '#fb923c', '#eab308', '#a3e635', '#34d399'];
+  $('#rep_stages').innerHTML = reportDonut(REPORT_STAGE_ORDER.map((k, i) => ({ label: STAGES[k]?.label || k, value: r.byStage[k] || 0, color: stageColors[i] })));
+
+  // أداء المصممين
+  const maxDes = Math.max(1, ...r.designersArr.map(d => d.count));
+  $('#rep_designers').innerHTML = r.designersArr.length ? r.designersArr.map(d =>
+    reportBar(d.name, d.count, maxDes, 'gold', `${fmtNum(d.count)} عقد • ${fmtMoney(d.value)}${d.avgDays != null ? ' • ' + d.avgDays + ' يوم' : ''}`)
+  ).join('') : '<p class="text-xs text-mist-500">لا توجد عقود.</p>';
+
+  // قمع اللوجستيات
+  const lg = r.logistics;
+  const maxLg = Math.max(1, lg.production, lg.shipping, lg.warehouse, lg.assigned, lg.installed, lg.completed);
+  $('#rep_logistics').innerHTML = [
+    reportBar('قيد التصنيع', lg.production, maxLg, 'indigo'),
+    reportBar('قيد الشحن', lg.shipping, maxLg, 'violet'),
+    reportBar('في مستودع المدينة', lg.warehouse, maxLg, 'cyan'),
+    reportBar('مسندة للفنيين', lg.assigned, maxLg, 'amber'),
+    reportBar('تم التركيب — بانتظار الاعتماد', lg.installed, maxLg, 'emerald'),
+    reportBar('مكتملة ومعتمدة', lg.completed, maxLg, 'emerald')
+  ].join('');
+
+  // مؤشر المهل
+  const dTotal = r.late + r.soon + r.safe;
+  const seg = (v, cls, label) => dTotal ? `<div class="${cls} h-full" style="width:${Math.round(v / dTotal * 100)}%" title="${label}: ${v}"></div>` : '';
+  $('#rep_deadlines').innerHTML = dTotal ? `
+    <div class="flex h-4 rounded-full overflow-hidden bg-ink-700 mb-3">
+      ${seg(r.safe, 'bg-emerald-500', 'ضمن المهلة')}${seg(r.soon, 'bg-amber-500', 'تقترب')}${seg(r.late, 'bg-rose-500', 'متأخرة')}
+    </div>
+    <div class="grid grid-cols-3 gap-2 text-center text-xs">
+      <div class="bg-ink-800/70 rounded-lg py-2"><b class="num text-emerald-300 block text-lg">${r.safe}</b><span class="text-mist-500">ضمن المهلة</span></div>
+      <div class="bg-ink-800/70 rounded-lg py-2"><b class="num text-amber-300 block text-lg">${r.soon}</b><span class="text-mist-500">تقترب (≤5 أيام)</span></div>
+      <div class="bg-ink-800/70 rounded-lg py-2"><b class="num text-rose-300 block text-lg">${r.late}</b><span class="text-mist-500">متأخرة</span></div>
+    </div>` : '<p class="text-xs text-mist-500">لا توجد مهل تسليم نشطة.</p>';
+
+  // تحتاج انتباه
+  $('#rep_attention').innerHTML = r.attention.length ? r.attention.slice(0, 10).map(a => `
+    <div class="flex flex-wrap items-center gap-2 bg-ink-800/70 border border-ink-600 rounded-xl px-3 py-2">
+      <span class="chip num border-ink-500 bg-ink-700 text-mist-200">${esc(a.c.id)}</span>
+      <span class="text-sm font-bold flex-1 min-w-[140px]">${esc(a.c.customer?.name || '—')}</span>
+      <span class="text-[11px] text-rose-300/90 flex-1 min-w-[180px]">${esc(a.reasons.join(' • '))}</span>
+      <button class="btn-ghost !py-1.5 !px-2.5 !text-[11px]" data-act="openDetails" data-id="${esc(a.c.id)}"><i class="fa-solid fa-folder-open"></i> فتح</button>
+    </div>`).join('') : '<p class="text-xs text-emerald-300/90"><i class="fa-solid fa-circle-check me-1"></i> لا توجد عقود تحتاج انتباهًا عاجلًا.</p>';
+
+  // أداء الفنيين
+  $('#rep_techs').innerHTML = r.techsArr.length ? `
+    <table class="w-full text-xs">
+      <thead><tr class="text-mist-500 text-[11px]"><th class="text-start py-1.5">الفني</th><th class="text-center">المهام</th><th class="text-center">مكتملة</th><th class="text-center">تشطيبات</th></tr></thead>
+      <tbody>${r.techsArr.map(t => `<tr class="border-t border-ink-700"><td class="py-1.5 font-bold">${esc(t.name)}</td><td class="text-center num">${t.total}</td><td class="text-center num text-emerald-300">${t.done}</td><td class="text-center num text-yellow-300">${t.finishing}</td></tr>`).join('')}</tbody>
+    </table>` : '<p class="text-xs text-mist-500">لم يُسند أي عمل لفنيين بعد.</p>';
+
+  // ضمان وصيانة
+  $('#rep_warranty').innerHTML = `
+    <div class="grid grid-cols-3 gap-2 text-center text-xs">
+      <div class="bg-ink-800/70 rounded-lg py-2"><b class="num text-emerald-300 block text-lg">${r.warrantyActive}</b><span class="text-mist-500">ضمان نشط</span></div>
+      <div class="bg-ink-800/70 rounded-lg py-2"><b class="num text-rose-300 block text-lg">${r.openTickets}</b><span class="text-mist-500">تذاكر مفتوحة</span></div>
+      <div class="bg-ink-800/70 rounded-lg py-2"><b class="num text-mist-300 block text-lg">${r.closedTickets}</b><span class="text-mist-500">تذاكر مغلقة</span></div>
+    </div>`;
+
+  // آخر النشاطات
+  $('#rep_activity').innerHTML = r.recent.length ? `<ul class="space-y-2">${r.recent.map(a => `
+    <li class="flex gap-2 text-xs"><span class="num text-mist-500 shrink-0">${fmtDate(a.at)}</span><span class="num text-gold-300 shrink-0">${esc(a.id)}</span><span class="text-mist-300 flex-1">${esc(a.text)} <span class="text-mist-500">— ${esc(a.by || '')}</span></span></li>`).join('')}</ul>` : '<p class="text-xs text-mist-500">لا يوجد نشاط بعد.</p>';
+}
+
+/* =====================================================================
+   تصدير التقرير والبيانات
+   ===================================================================== */
+function csvEscape(v) {
+  const s = String(v ?? '');
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function actExportCSV() {
+  const cs = S.data?.contracts || [];
+  if (!cs.length) return toast('لا توجد عقود للتصدير.', 'warn');
+  const header = ['رقم العقد', 'اسم العميل', 'الجوال', 'العنوان', 'المصمم', 'المرحلة', 'الإجمالي', 'المدفوع', 'المتبقي', 'تاريخ الإنشاء', 'مهلة التسليم', 'الفني', 'تاريخ التركيب', 'الضمان حتى', 'تذاكر مفتوحة'];
+  const rows = cs.map(c => [
+    c.id, c.customer?.name, c.customer?.phone, c.customer?.address, c.designer,
+    (STAGES[c.stage]?.label || c.stage), (c.payment?.total || 0), paidOf(c), remainingOf(c),
+    c.createdAt ? fmtDate(c.createdAt) : '', c.drawing?.deadline ? fmtDate(c.drawing.deadline) : '',
+    c.technician?.name || '', c.installation?.installedAt ? fmtDate(c.installation.installedAt) : '',
+    c.warranty?.until ? fmtDate(c.warranty.until) : '',
+    (c.maintenance || []).filter(t => t.status === 'open').length
+  ]);
+  const csv = '\uFEFF' + [header, ...rows].map(row => row.map(csvEscape).join(',')).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `borj-contracts-${nowISO().slice(0, 10)}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast(`تم تصدير ${cs.length} عقدًا إلى ملف CSV.`, 'ok');
+}
+
+function actPrintReport() {
+  if (!canViewReport()) return toast('التقرير متاح للمدير العام فقط.', 'err');
+  switchTab('contracts');
+  setTimeout(() => window.print(), 60);
 }
 
 /* ---------------------- كرت عقد ---------------------- */
@@ -775,6 +1073,7 @@ function renderHeader() {
 function renderAll() {
   if (S.techPortal) { renderTechPortal(); return; }
   renderHeader();
+  renderReport();
   renderStats();
   renderContracts();
   renderWarehouse();
@@ -1527,6 +1826,8 @@ function bindEvents() {
 
     if (e.target.closest('#btnTechPortal')) { enterTechnicianPortal(); return; }
     if (e.target.closest('#btnTechExit')) { exitTechnicianPortal(); return; }
+    if (e.target.closest('#btnReportPrint')) { actPrintReport(); return; }
+    if (e.target.closest('#btnReportCSV')) { actExportCSV(); return; }
     if (e.target.closest('#btnTechRefresh')) {
       loadData(true).then(() => { renderTechPortal(); toast(S.mode === 'github' ? 'تم جلب أحدث البيانات من المستودع.' : 'تم تحديث البيانات المحلية.', S.mode === 'offline' ? 'warn' : 'info'); });
       return;
