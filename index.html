@@ -39,6 +39,7 @@
       <div class="flex items-center gap-2">
         <button id="btnRefresh" class="btn-ghost !px-3" title="تحديث البيانات"><i class="fa-solid fa-rotate-right"></i><span class="hidden md:inline">تحديث</span></button>
         <button id="btnSwitch" class="btn-ghost !px-3" title="تغيير الهوية / الدور"><i class="fa-solid fa-id-badge"></i><span class="hidden md:inline">تبديل الدور</span></button>
+        <button id="btnViewAs" class="btn-ghost !px-3 hidden" title="عرض المنظومة كهوية موظف"><i class="fa-solid fa-user-secret"></i><span class="hidden md:inline">اعرض كموظف</span></button>
         <button id="btnLogout" class="btn-ghost !px-3 hidden" title="تسجيل الخروج"><i class="fa-solid fa-right-from-bracket"></i><span class="hidden md:inline">خروج</span></button>
         <button id="btnSettings" class="btn-ghost !px-3" title="الإعدادات"><i class="fa-solid fa-gear"></i></button>
       </div>
@@ -64,6 +65,15 @@
       <button class="tabbtn" data-tab="maintenance"><i class="fa-solid fa-magnifying-glass"></i> البحث في الصيانة</button>
     </nav>
   </header>
+
+  <!-- شريط الاستعراض: يظهر للمدير العام فقط أثناء «عرض المنظومة كموظف» -->
+  <div id="viewAsBanner" class="hidden sticky top-[64px] z-30 bg-amber-500/15 border-b-2 border-amber-400/50 text-amber-200 backdrop-blur">
+    <div class="max-w-7xl mx-auto px-4 py-2 flex flex-wrap items-center gap-3 text-sm">
+      <i class="fa-solid fa-user-secret text-lg"></i>
+      <span><b>أنت تستعرض المنظومة كهوية:</b> <span id="viewAsWho" class="font-bold"></span> — كل إجراء تقوم به الآن سيُسجَّل باسم هذه الهوية.</span>
+      <button id="btnViewAsStop" class="btn-ghost !py-1.5 !px-3 ms-auto !text-amber-200 !border-amber-400/50"><i class="fa-solid fa-rotate-left"></i> رجوع لهوية المدير</button>
+    </div>
+  </div>
 
   <main class="max-w-7xl mx-auto px-4 py-6">
 
@@ -461,6 +471,19 @@
           </span>
         </button>
       </div>
+    </div>
+  </div>
+
+  <!-- ======================= موجه الاستعراض (للمدير العام فقط) ======================= -->
+  <div id="viewAsModal" class="fixed inset-0 z-[66] hidden items-center justify-center bg-ink-950/95 backdrop-blur p-4 overflow-y-auto">
+    <div class="w-full max-w-lg text-center py-8">
+      <div class="w-14 h-14 mx-auto rounded-2xl bg-gradient-to-br from-amber-400 to-amber-600 grid place-items-center shadow-xl shadow-amber-600/25 mb-4">
+        <i class="fa-solid fa-user-secret text-ink-950 text-2xl"></i>
+      </div>
+      <h2 class="font-head font-extrabold text-xl mb-1">عرض المنظومة كهوية موظف</h2>
+      <p class="text-sm text-mist-400 mb-5">اختر موظفاً لتجربة المنظومة كما يراها. أي إجراء تقوم به سيُحفظ ويُسجَّل باسمه.</p>
+      <div id="viewAsList" class="space-y-2 text-start mb-4"></div>
+      <button id="btnViewAsCancel" class="btn-ghost w-full"><i class="fa-solid fa-xmark"></i> إلغاء</button>
     </div>
   </div>
 

@@ -29,7 +29,16 @@ window.fetch = async (url, opts = {}) => {
     return json({ access_token: 'tok_123', refresh_token: 'ref_123', expires_in: 3600, user: { id: 'user-1', email: 'a@b.c' } });
   }
   if (u.includes('/auth/v1/logout')) return json({}, 204);
-  if (u.includes('/rest/v1/profiles')) return json([{ role: 'supervisor', person: 'روان' }]);
+  if (u.includes('/rest/v1/profiles')) {
+    if (u.includes('select=id,role,person,email')) {
+      return json([
+        { id: 'user-1', role: 'supervisor', person: 'روان', email: 'boss@borj.app' },
+        { id: 'user-2', role: 'designer', person: 'أبو جمال', email: 'jamal@borj.app' },
+        { id: 'user-3', role: 'warehouse', person: 'خالد', email: 'khaled@borj.app' }
+      ]);
+    }
+    return json([{ role: 'supervisor', person: 'روان' }]);
+  }
   if (u.includes('/rest/v1/store')) {
     if ((opts.method || 'GET') === 'POST') { storeRow = JSON.parse(opts.body); return json(null, 201); }
     return json(storeRow ? [{ data: storeRow.data }] : []);
@@ -40,7 +49,7 @@ window.localStorage.clear();
 
 const js = readFileSync('app.js', 'utf8');
 try {
-  window.eval(js + '\n;window.__T = { S, sbSignIn, sbSignOut, sbLoadData, sbPutData, sbGetProfile, sbRefresh, applyCloudIdentity, doCloudLogout, renderAll, renderHeader };');
+  window.eval(js + '\n;window.__T = { S, sbSignIn, sbSignOut, sbLoadData, sbPutData, sbGetProfile, sbListProfiles, sbRefresh, applyCloudIdentity, doCloudLogout, renderAll, renderHeader, startViewAs, stopViewAs, openViewAs, effRole, effPerson, isSupervisor, byName };');
 } catch (e) {
   console.error('❌ app.js فشل عند التحميل:', e.message);
   process.exit(1);
@@ -80,6 +89,23 @@ S.mode = 'supabase';
 T.renderHeader();
 checks.push(['زر الخروج يظهر في الوضع السحابي', !doc.querySelector('#btnLogout').classList.contains('hidden')]);
 checks.push(['قائمة تبديل الدور تُخفى في الوضع السحابي', doc.querySelector('#roleSel').classList.contains('hidden')]);
+checks.push(['زر «اعرض كموظف» يظهر للمدير', !doc.querySelector('#btnViewAs').classList.contains('hidden')]);
+
+// 4ب) قائمة الموظفين (للمشرف)
+const profs = await T.sbListProfiles();
+checks.push(['جلب قائمة الموظفين', profs.length === 3 && profs.some(p => p.person === 'أبو جمال')]);
+
+// 4ج) الاستعراض يبدّل الصلاحيات والهوية، ثم الرجوع يستعيد المدير
+T.startViewAs('designer', 'أبو جمال');
+checks.push(['الاستعراض يبدّل الدور الفعلي', T.effRole() === 'designer' && T.effPerson() === 'أبو جمال']);
+checks.push(['السجل يتبع الهوية المعروضة', T.byName().includes('أبو جمال')]);
+checks.push(['الاستعراض يخفي زر المدير', S.viewAs !== null]);
+T.renderHeader();
+checks.push(['شريط الاستعراض يظهر', !doc.querySelector('#viewAsBanner').classList.contains('hidden')]);
+checks.push(['زر «اعرض كموظف» يُخفى أثناء الاستعراض', doc.querySelector('#btnViewAs').classList.contains('hidden')]);
+T.stopViewAs();
+checks.push(['الرجوع يستعيد صلاحية المدير', S.viewAs === null && T.isSupervisor() === true]);
+checks.push(['شريط الاستعراض يختفي', doc.querySelector('#viewAsBanner').classList.contains('hidden')]);
 
 // 5) تسجيل الخروج
 await T.doCloudLogout();

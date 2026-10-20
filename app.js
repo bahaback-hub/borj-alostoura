@@ -96,6 +96,8 @@ const S = {
   data: null, sha: null, etag: null,
   mode: 'demo',            // demo | github | offline | supabase
   sbSession: null,         // جلسة Supabase الحالية
+  sbProfile: null,         // ملف المستخدم الحالي من profiles (دوره الحقيقي واسمه)
+  viewAs: null,            // عند الاستعراض: { role, person, email } للموظف المعروض (للمدير فقط)
   tab: 'contracts',
   curId: null,             // العقد المفتوح في نافذة التفاصيل
   confirmResolve: null,
@@ -110,20 +112,23 @@ const LS = {
 };
 
 /* ------------------------- صلاحيات (الأدوار) ------------------------- */
-const isSupervisor = () => S.role === 'supervisor';
-const canPay = () => ['supervisor', 'designer'].includes(S.role);
-const canCreate = () => ['supervisor', 'designer'].includes(S.role);
-const canLogistics = () => ['supervisor', 'warehouse'].includes(S.role);
+// الدور/الاسم الفعليان: أثناء «الاستعراض» يتبدّلان إلى الموظف المعروض (للمدير العام فقط).
+const effRole = () => (S.viewAs?.role) || S.role;
+const effPerson = () => (S.viewAs ? (S.viewAs.person || '') : S.person);
+const isSupervisor = () => effRole() === 'supervisor';
+const canPay = () => ['supervisor', 'designer'].includes(effRole());
+const canCreate = () => ['supervisor', 'designer'].includes(effRole());
+const canLogistics = () => ['supervisor', 'warehouse'].includes(effRole());
 const canClose = () => isSupervisor();
 const canViewReport = () => isSupervisor();
-const canTicket = () => ['supervisor', 'warehouse', 'technician'].includes(S.role);
+const canTicket = () => ['supervisor', 'warehouse', 'technician'].includes(effRole());
 const canUploadDrawing = (c) => isSupervisor() || paidOf(c) >= (c.payment?.total || 0);
 // مدير التركيب (البوابة) يرى كل العقود المسندة؛ الفني العادي (بدور technician واسم) يرى ما أُسند له فقط.
-const techOwn = (c) => !!c.technician && (S.techPortal || (S.role === 'technician' && c.technician?.name === S.person));
+const techOwn = (c) => !!c.technician && (S.techPortal || (effRole() === 'technician' && c.technician?.name === effPerson()));
 
 const paidOf = (c) => (c.payment?.log || []).reduce((s, p) => s + (+p.amount || 0), 0);
 const remainingOf = (c) => Math.max(0, (c.payment?.total || 0) - paidOf(c));
-const byName = () => S.techPortal ? 'فني تركيب (بوابة الفنيين)' : `${ROLE_DEFS[S.role]?.label || S.role}${S.person ? ' — ' + S.person : ''}`;
+const byName = () => S.techPortal ? 'فني تركيب (بوابة الفنيين)' : `${ROLE_DEFS[effRole()]?.label || effRole()}${effPerson() ? ' — ' + effPerson() : ''}`;
 
 /* =====================================================================
    طبقة Supabase (قاعدة البيانات السحابية)
@@ -232,6 +237,11 @@ async function sbGetProfile(userId) {
   const rows = await sbFetch(`/rest/v1/profiles?id=eq.${userId}&select=role,person`);
   if (!rows || !rows.length) return null;
   return rows[0];
+}
+
+/** جلب كل الملفات الشخصية (للمشرف فقط — تسمح سياسة RLS بذلك) لعرض قائمة الموظفين. */
+async function sbListProfiles() {
+  return await sbFetch('/rest/v1/profiles?select=id,role,person,email&order=role') || [];
 }
 
 /** رفع ملف رسمة إلى Supabase Storage (دلو 'drawings') — تُعيد الرابط العام. */
@@ -873,7 +883,7 @@ function primaryAction(c) {
 
 function contractCard(c) {
   const rem = remainingOf(c);
-  const mine = techOwn(c) || (S.role === 'designer' && c.designer === S.person);
+  const mine = techOwn(c) || (effRole() === 'designer' && c.designer === effPerson());
   return `
   <div class="card p-5 ${mine ? '!border-gold-500/40' : ''}">
     <div class="flex flex-wrap items-center gap-2 mb-3">
@@ -958,7 +968,7 @@ function whItem(c) {
     actions.push(`<button class="btn-gold !py-2 !px-3 text-xs" data-act="closeFile" data-id="${c.id}"><i class="fa-solid fa-flag-checkered"></i> اعتماد وإنهاء الملف</button>`);
   actions.push(`<button class="btn-ghost !py-2 !px-3 text-xs" data-act="openDetails" data-id="${c.id}"><i class="fa-solid fa-file-lines"></i> تفاصيل</button>`);
 
-  const customerLine = (isMine || S.role !== 'technician')
+  const customerLine = (isMine || effRole() !== 'technician')
     ? `<p class="text-xs text-mist-300 mt-1"><i class="fa-solid fa-phone me-1.5 text-mist-500"></i><a href="tel:${esc(c.customer?.phone)}" dir="ltr" class="num">${esc(c.customer?.phone)}</a> — ${esc(c.customer?.address || '')}</p>`
     : '';
 
@@ -981,7 +991,7 @@ function whItem(c) {
 function renderWarehouse() {
   const cs = S.data?.contracts || [];
   const wrap = $('#whWrap');
-  if (S.role === 'technician') {
+  if (effRole() === 'technician') {
     const mine = cs.filter(c => techOwn(c) && ['assigned', 'needs_finishing', 'installation_done'].includes(c.stage));
     $('#whIntro').classList.add('hidden');
     wrap.innerHTML = whSection('مهام التركيب الخاصة بي', 'fa-screwdriver-wrench', 'text-gold-400', mine,
@@ -1215,7 +1225,7 @@ function renderNewTab() {
   const designers = S.data?.settings?.designers || [];
   const sel = $('#nc_designer');
   const cur = sel.value;
-  sel.innerHTML = designers.map(d => `<option value="${esc(d)}" ${S.role === 'designer' && S.person === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
+  sel.innerHTML = designers.map(d => `<option value="${esc(d)}" ${effRole() === 'designer' && effPerson() === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
   if (cur) sel.value = cur;
 }
 
@@ -1232,9 +1242,9 @@ function renderModeBadge() {
 function renderHeader() {
   renderModeBadge();
   const chip = $('#identityChip');
-  if (S.role && !S.techPortal) {
+  if (effRole() && !S.techPortal) {
     chip.classList.remove('hidden');
-    chip.innerHTML = `<i class="fa-solid ${ROLE_DEFS[S.role].icon}"></i> ${ROLE_DEFS[S.role].label}${S.person ? ' — ' + esc(S.person) : ''}`;
+    chip.innerHTML = `<i class="fa-solid ${ROLE_DEFS[effRole()].icon}"></i> ${ROLE_DEFS[effRole()].label}${effPerson() ? ' — ' + esc(effPerson()) : ''}`;
   } else if (!S.techPortal) chip.classList.add('hidden');
   // في الوضع السحابي: تُخفى قائمة تبديل الدور ويظهر زر الخروج.
   const cloud = !!(S.sbSession?.access_token && S.mode === 'supabase');
@@ -1243,6 +1253,22 @@ function renderHeader() {
   if (ps && cloud) ps.classList.add('hidden');
   if (sw) sw.classList.toggle('hidden', cloud);
   if (lo) lo.classList.toggle('hidden', !cloud);
+  // زر «اعرض كموظف»: للمدير الحقيقي فقط في الوضع السحابي، ويُخفى أثناء الاستعراض نفسه.
+  const va = $('#btnViewAs');
+  if (va) va.classList.toggle('hidden', !(cloud && S.role === 'supervisor' && !S.viewAs));
+  renderViewAsBanner();
+}
+
+/** شريط الاستعراض أعلى الصفحة — يظهر أثناء «عرض المنظومة كموظف». */
+function renderViewAsBanner() {
+  const bar = $('#viewAsBanner');
+  if (!bar) return;
+  const on = !!S.viewAs;
+  bar.classList.toggle('hidden', !on);
+  if (on) {
+    const who = $('#viewAsWho');
+    if (who) who.textContent = `${ROLE_DEFS[S.viewAs.role]?.label || S.viewAs.role}${S.viewAs.person ? ' — ' + S.viewAs.person : ''}`;
+  }
 }
 
 function renderAll() {
@@ -1309,7 +1335,7 @@ function applyPortalChrome() {
   const on = S.techPortal;
   const headerNav = document.querySelector('header nav');
   if (headerNav) headerNav.classList.toggle('hidden', on);
-  ['#roleSel', '#personSel', '#btnSettings', '#btnSwitch', '#btnLogout'].forEach(s => { const el = $(s); if (el) el.classList.toggle('hidden', on); });
+  ['#roleSel', '#personSel', '#btnSettings', '#btnSwitch', '#btnLogout', '#btnViewAs'].forEach(s => { const el = $(s); if (el) el.classList.toggle('hidden', on); });
   ['#tab-contracts', '#tab-new', '#tab-warehouse', '#tab-maintenance'].forEach(s => { const el = $(s); if (el) el.classList.toggle('hidden', on); });
   const portal = $('#techPortal');
   if (portal) portal.classList.toggle('hidden', !on);
@@ -1862,9 +1888,11 @@ function showLoginError(msg) {
 async function applyCloudIdentity() {
   let prof = null;
   try { prof = await sbGetProfile(S.sbSession?.user?.id); } catch { /* جدول profiles قد لا يوجد بعد */ }
+  S.sbProfile = prof || null;
   const role = prof?.role || 'supervisor';
   S.role = role;
   S.person = prof?.person || '';
+  S.viewAs = null;                 // لا استعراض عند الدخول
   LS.set(STORE.role, { role: S.role, person: S.person });
   closeOnboard();
   await loadData();
@@ -1897,13 +1925,64 @@ async function doCloudLogin(e) {
 
 /** تسجيل الخروج والعودة لشاشة الدخول. */
 async function doCloudLogout() {
+  S.viewAs = null;                 // إلغاء أي استعراض قبل الخروج
   await sbSignOut();
-  S.role = null; S.person = ''; S.data = null;
+  S.role = null; S.person = ''; S.data = null; S.sbProfile = null;
   LS.del(STORE.role);
   $('#roleSel').value = '';
   renderAll();
   openOnboard('login');
   toast('تم تسجيل الخروج.', 'info');
+}
+
+/* =====================================================================
+   استعراض المنظومة كهوية موظف (للمدير العام فقط)
+   ===================================================================== */
+/** فتح نافذة اختيار الموظف وجلب القائمة من profiles. */
+async function openViewAs() {
+  if (!(S.role === 'supervisor' && !S.viewAs && S.mode === 'supabase')) return;
+  const modal = $('#viewAsModal'), list = $('#viewAsList');
+  if (!modal || !list) return;
+  modal.classList.remove('hidden'); modal.classList.add('flex');
+  list.innerHTML = '<p class="text-center text-sm text-mist-400 py-6"><i class="fa-solid fa-circle-notch fa-spin"></i> جارٍ تحميل الموظفين…</p>';
+  let profiles = [];
+  try { profiles = await sbListProfiles(); } catch { /* لا صلاحية أو خطأ شبكة */ }
+  profiles = profiles.filter(p => p.role);
+  if (!profiles.length) {
+    list.innerHTML = '<p class="text-center text-sm text-mist-400 py-6">لا يوجد موظفون آخرون مسجّلون بعد.</p>';
+    return;
+  }
+  list.innerHTML = profiles.map(p => `
+    <button class="card w-full p-3 flex items-center gap-3 hover:border-amber-500/50 transition text-start" data-vapick="${esc(p.id)}" data-varole="${esc(p.role)}" data-vaperson="${esc(p.person || '')}">
+      <i class="fa-solid ${ROLE_DEFS[p.role]?.icon || 'fa-user'} text-lg text-amber-400"></i>
+      <span class="flex-1">
+        <span class="block font-bold text-sm">${esc(p.person || ROLE_DEFS[p.role]?.label || p.role)}</span>
+        <span class="block text-[11px] text-mist-400">${esc(ROLE_DEFS[p.role]?.label || p.role)}${p.email ? ' — ' + esc(p.email) : ''}</span>
+      </span>
+      <i class="fa-solid fa-chevron-left text-mist-500"></i>
+    </button>`).join('');
+}
+
+function closeViewAs() {
+  const modal = $('#viewAsModal');
+  if (modal) { modal.classList.add('hidden'); modal.classList.remove('flex'); }
+}
+
+/** تفعيل الاستعراض بهوية موظف مختار. */
+function startViewAs(role, person) {
+  if (S.role !== 'supervisor') return;
+  S.viewAs = { role: role || 'supervisor', person: person || '' };
+  closeViewAs();
+  renderAll();
+  toast(`أنت تستعرض المنظومة كهوية: ${ROLE_DEFS[role]?.label || role}${person ? ' — ' + person : ''}.`, 'warn');
+}
+
+/** إيقاف الاستعراض والعودة لهوية المدير الحقيقي. */
+function stopViewAs() {
+  if (!S.viewAs) return;
+  S.viewAs = null;
+  renderAll();
+  toast('تم الرجوع إلى صلاحية المدير العام.', 'info');
 }
 
 function setIdentity(role, person, { silent = false } = {}) {
@@ -2067,6 +2146,9 @@ function bindEvents() {
     const operson = e.target.closest('[data-operson]');
     if (operson) { closeOnboard(); setIdentity(S.obRole, operson.dataset.operson); return; }
 
+    const vapick = e.target.closest('[data-vapick]');
+    if (vapick) { startViewAs(vapick.dataset.varole, vapick.dataset.vaperson); return; }
+
     if (e.target.closest('#btnTechPortal')) { enterTechnicianPortal(); return; }
     if (e.target.closest('#btnTechExit')) { exitTechnicianPortal(); return; }
     if (e.target.closest('#btnReportPrint')) { actPrintReport(); return; }
@@ -2124,6 +2206,9 @@ function bindEvents() {
   $('#btnSwitch').addEventListener('click', () => openOnboard('role'));
   $('#loginForm').addEventListener('submit', doCloudLogin);
   $('#btnLogout').addEventListener('click', doCloudLogout);
+  $('#btnViewAs').addEventListener('click', openViewAs);
+  $('#btnViewAsStop').addEventListener('click', stopViewAs);
+  $('#btnViewAsCancel').addEventListener('click', closeViewAs);
 
   // الإعدادات والتحديث
   $('#btnSettings').addEventListener('click', openSettings);

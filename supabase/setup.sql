@@ -11,41 +11,69 @@ create table if not exists public.store (
   updated_at  timestamptz not null default now()
 );
 
--- 2) جدول الملفات الشخصية: يربط كل حساب مُسجّل بدوره واسمه.
+-- 2) جدول الملفات الشخصية: يربط كل حساب مُسجّل بدوره واسمه وبريده.
 create table if not exists public.profiles (
   id          uuid primary key references auth.users(id) on delete cascade,
   role        text not null default 'supervisor'
               check (role in ('supervisor','designer','warehouse','technician')),
   person      text not null default '',
+  email       text not null default '',
+  can_write   boolean not null default false,
   updated_at  timestamptz not null default now()
 );
+
+-- إضافة الأعمدة إن كان الجدول منشأً من إصدار سابق.
+alter table public.profiles add column if not exists email     text    not null default '';
+alter table public.profiles add column if not exists can_write boolean not null default false;
 
 -- 3) تفعيل أمان مستوى الصفوف (RLS).
 alter table public.store    enable row level security;
 alter table public.profiles enable row level security;
 
--- 4) سياسات جدول store: لا قراءة ولا كتابة إلا للمستخدمين المسجّلين.
+-- 4) دالة مساعدة: دور المستخدم الحالي واسمه (بصلاحية تعريف لتفادي تعارض RLS).
+create or replace function public.current_role()
+returns text language sql stable security definer set search_path = public as $$
+  select coalesce((select role from public.profiles where id = auth.uid()), '');
+$$;
+
+create or replace function public.current_can_write()
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce((select can_write from public.profiles where id = auth.uid()), false);
+$$;
+
+-- 5) سياسات جدول store: القراءة لكل مسجّل، والكتابة لمن يملك can_write (جميع الأدوار افتراضيًا).
 drop policy if exists store_select_auth on public.store;
 drop policy if exists store_insert_auth on public.store;
 drop policy if exists store_update_auth on public.store;
 create policy store_select_auth on public.store for select to authenticated using (true);
-create policy store_insert_auth on public.store for insert to authenticated with check (true);
-create policy store_update_auth on public.store for update to authenticated using (true) with check (true);
+create policy store_insert_auth on public.store for insert to authenticated with check (public.current_can_write());
+create policy store_update_auth on public.store for update to authenticated
+  using (public.current_can_write()) with check (public.current_can_write());
 
--- 5) سياسات جدول profiles: كل مستخدم يقرأ ملفه؛ والمشرف يقرأ الكل ويعدّل.
+-- 6) سياسات جدول profiles: المشرف يقرأ ويعدّل الكل؛ غيره يقرأ ويعدّل ملفه فقط.
 drop policy if exists profiles_select_own on public.profiles;
 drop policy if exists profiles_update_own on public.profiles;
+drop policy if exists profiles_insert_self on public.profiles;
 create policy profiles_select_own on public.profiles for select to authenticated
-  using (id = auth.uid() or exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'supervisor'));
+  using (id = auth.uid() or public.current_role() = 'supervisor');
 create policy profiles_update_own on public.profiles for update to authenticated
-  using (id = auth.uid()) with check (id = auth.uid());
+  using (id = auth.uid() or public.current_role() = 'supervisor')
+  with check (id = auth.uid() or public.current_role() = 'supervisor');
+create policy profiles_insert_self on public.profiles for insert to authenticated
+  with check (id = auth.uid() or public.current_role() = 'supervisor');
 
--- 6) إنشاء صف profile تلقائيًا لكل مستخدم جديد (دوره الافتراضي: مصمم).
+-- 7) إنشاء صف profile تلقائيًا لكل مستخدم جديد (دوره الافتراضي: مصمم).
 create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
-  insert into public.profiles (id, role, person)
-  values (new.id, 'designer', coalesce(new.raw_user_meta_data->>'person', ''))
+  insert into public.profiles (id, role, person, email, can_write)
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data->>'role', 'designer'),
+    coalesce(new.raw_user_meta_data->>'person', ''),
+    coalesce(new.email, ''),
+    true
+  )
   on conflict (id) do nothing;
   return new;
 end; $$;
@@ -55,12 +83,18 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
--- 7) صف بيانات المنظومة الأولي (فارغ).
+-- 8) تحديث بريد الملفات الحالية من auth.users (للمستخدمين المنشأين مسبقًا).
+update public.profiles p
+set email = coalesce(u.email, '')
+from auth.users u
+where u.id = p.id and (p.email is null or p.email = '');
+
+-- 9) صف بيانات المنظومة الأولي (فارغ).
 insert into public.store (id, data)
 values ('main', '{"meta":{"system":"منظومة برج الأسطورة","version":1,"lastUpdated":null,"nextNumber":1,"nextTicket":1},"settings":{"designers":["أبو جمال","أبو يزن","علاء","خالد"],"technicians":[],"warrantyYears":15,"defaultDeliveryDays":30,"shippingDays":10,"city":"المدينة المنورة","factory":"القصيم"},"contracts":[]}'::jsonb)
 on conflict (id) do nothing;
 
--- 8) دلو التخزين لرسمات المصنع (ملفات PDF/صور) — عام للقراءة، والكتابة للمسجّلين فقط.
+-- 10) دلو التخزين لرسمات المصنع (ملفات PDF/صور) — عام للقراءة، والكتابة للمسجّلين فقط.
 insert into storage.buckets (id, name, public) values ('drawings', 'drawings', true)
 on conflict (id) do nothing;
 
@@ -69,7 +103,7 @@ drop policy if exists drawings_write on storage.objects;
 create policy drawings_read on storage.objects for select to public
   using (bucket_id = 'drawings');
 create policy drawings_write on storage.objects for insert to authenticated
-  with check (bucket_id = 'drawings');
+  with check (bucket_id = 'drawings' and public.current_can_write());
 
 -- ============================================================================
 --  بعد التشغيل: أنشئ المستخدمين من Authentication → Users → Add user،
