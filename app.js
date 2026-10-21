@@ -234,9 +234,9 @@ async function sbPutData(data) {
   });
 }
 
-/** جلب ملف المستخدم (الدور والاسم) من جدول profiles. */
+/** جلب ملف المستخدم (الدور والاسم وصلاحية الكتابة) من جدول profiles. */
 async function sbGetProfile(userId) {
-  const rows = await sbFetch(`/rest/v1/profiles?id=eq.${userId}&select=role,person`);
+  const rows = await sbFetch(`/rest/v1/profiles?id=eq.${userId}&select=role,person,email,can_write`);
   if (!rows || !rows.length) return null;
   return rows[0];
 }
@@ -389,7 +389,17 @@ async function saveData(mutator, commitMsg) {
     mutator(fresh);
     fresh.meta = fresh.meta || {};
     fresh.meta.lastUpdated = nowISO();
-    await sbPutData(fresh);
+    try {
+      await sbPutData(fresh);
+    } catch (e) {
+      if (/row-level security|42501/i.test(String(e.body || e.message || ''))) {
+        const err = new Error('لا تملك صلاحية الكتابة في قاعدة البيانات. اطلب من المدير تفعيل can_write لحسابك في جدول profiles.');
+        err.code = 'RLS_WRITE_DENIED';
+        err.status = e.status;
+        throw err;
+      }
+      throw e;
+    }
     S.data = fresh;
     LS.set(STORE.cache, { at: nowISO(), data: fresh }); // نسخة احتياطية محلية
     return;
@@ -2091,6 +2101,9 @@ async function applyCloudIdentity() {
   closeOnboard();
   await loadData();
   renderAll();
+  if (prof && prof.can_write === false) {
+    toast('حسابك للقراءة فقط (can_write=false). اطلب من المدير تفعيل صلاحية الكتابة لحسابك.', 'warn');
+  }
   toast(`مرحبًا ${S.person || ROLE_DEFS[role]?.label || ''} — أنت متصل بقاعدة البيانات السحابية.`, 'ok');
 }
 

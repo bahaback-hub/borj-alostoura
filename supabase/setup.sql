@@ -94,6 +94,11 @@ insert into public.store (id, data)
 values ('main', '{"meta":{"system":"منظومة برج الأسطورة","version":1,"lastUpdated":null,"nextNumber":1,"nextTicket":1},"settings":{"designers":["أبو جمال","أبو يزن","علاء","خالد"],"technicians":[],"warrantyYears":15,"defaultDeliveryDays":30,"shippingDays":10,"city":"المدينة المنورة","factory":"القصيم"},"contracts":[]}'::jsonb)
 on conflict (id) do nothing;
 
+-- 9-ب) ترقية مهمة: الحسابات التي أُنشئت قبل إضافة عمود can_write بقي عندها false،
+--      فتُرفض كتابتها على جدول store. نمنحها true ليطابق السلوك الافتراضي للحسابات الجديدة.
+--      (بعد التشغيل يمكنك سحب الصلاحية يدويًا من: update public.profiles set can_write=false where email='...')
+update public.profiles set can_write = true where can_write is not true;
+
 -- 10) دلو التخزين لرسمات المصنع (ملفات PDF/صور) — عام للقراءة، والكتابة للمسجّلين فقط.
 insert into storage.buckets (id, name, public) values ('drawings', 'drawings', true)
 on conflict (id) do nothing;
