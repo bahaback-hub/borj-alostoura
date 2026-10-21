@@ -102,7 +102,9 @@ const S = {
   curId: null,             // العقد المفتوح في نافذة التفاصيل
   confirmResolve: null,
   techPortal: false,       // true عند الدخول من بوابة الفنيين (بلا هوية)
-  filters: { q: '', stage: '', designer: '' }
+  filters: { q: '', stage: '', designer: '' },
+  filtersArchive: { q: '', stage: '', designer: '' },
+  contractQuickFilter: null
 };
 
 const LS = {
