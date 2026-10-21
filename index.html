@@ -63,7 +63,6 @@
       <button class="tabbtn" data-tab="new"><i class="fa-solid fa-circle-plus"></i> عقد جديد</button>
       <button class="tabbtn" data-tab="warehouse"><i class="fa-solid fa-warehouse"></i> المستودع واللوجستيات</button>
       <button class="tabbtn" data-tab="archive"><i class="fa-solid fa-box-archive"></i> الأرشيف</button>
-      <button class="tabbtn" data-tab="archive"><i class="fa-solid fa-box-archive"></i> الأرشيف</button>
     </nav>
   </header>
 
@@ -258,27 +257,6 @@
         <p class="font-bold">ابدأ بالبحث لعرض ملفات العملاء</p>
         <p class="text-sm mt-1">يتم البحث في كل العقود — المفتوحة والمغلقة — وبطريقة متسامحة مع الهمزات والتاء المربوطة.</p>
       </div>
-    </section>
-
-    <!-- ======================= تبويب: الأرشيف ======================= -->
-    <section id="tab-archive" class="hidden fade-in">
-      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <h2 class="font-head font-extrabold text-xl flex items-center gap-2"><i class="fa-solid fa-box-archive text-gold-400"></i> أرشيف العقود المنتهية</h2>
-        <span class="text-xs text-mist-400">يُعرض هنا العقود ذات المرحلة «منتهي» فقط</span>
-      </div>
-      <div class="card p-4 mb-4">
-        <div class="flex flex-wrap gap-3 items-center">
-          <div class="relative flex-1 min-w-[220px]">
-            <i class="fa-solid fa-magnifying-glass absolute top-1/2 -translate-y-1/2 start-3.5 text-mist-500 text-sm"></i>
-            <input id="fltArchiveSearch" class="input ps-10" placeholder="بحث سريع: اسم العميل / رقم الجوال / رقم العقد…">
-          </div>
-          <select id="fltArchiveDesigner" class="input !py-2 !w-auto text-xs">
-            <option value="">كل المصممين</option>
-          </select>
-        </div>
-      </div>
-      <div id="archiveList" class="grid grid-cols-1 xl:grid-cols-2 gap-5"></div>
-      <div id="archiveEmpty" class="card p-10 text-center text-mist-400 hidden"><i class="fa-solid fa-box-archive text-3xl mb-2"></i><p>لا توجد عقود منتهية بعد</p></div>
     </section>
 
     <!-- ======================= تبويب: الأرشيف ======================= -->

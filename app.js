@@ -385,7 +385,7 @@ async function ghUploadDrawing(fileName, base64Content, contractId) {
  */
 async function saveData(mutator, commitMsg) {
   if (S.mode === 'supabase' && sbReady()) {
-    const fresh = (await sbLoadData()) || FALLBACK_SEED();   // جلب أحدث نسخة (دمج آمن)
+    const fresh = normalizeData(await sbLoadData());   // جلب أحدث نسخة (دمج آمن)
     mutator(fresh);
     fresh.meta = fresh.meta || {};
     fresh.meta.lastUpdated = nowISO();
@@ -448,6 +448,19 @@ const FALLBACK_SEED = () => ({
   contracts: []
 });
 
+/** توحيد شكل البيانات القادمة من السحابة/المستودع حتى لا تتعطّل الواجهة عند صف فارغ أو ناقص. */
+function normalizeData(raw) {
+  const seed = FALLBACK_SEED();
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return seed;
+  return {
+    ...seed,
+    ...raw,
+    meta: { ...seed.meta, ...(raw.meta && typeof raw.meta === 'object' ? raw.meta : {}) },
+    settings: { ...seed.settings, ...(raw.settings && typeof raw.settings === 'object' ? raw.settings : {}) },
+    contracts: Array.isArray(raw.contracts) ? raw.contracts : []
+  };
+}
+
 async function fetchLocalSeed() {
   try {
     const res = await fetch(S.cfg.path || 'data/contracts.json', { cache: 'no-store' });
@@ -464,7 +477,7 @@ async function loadData(silent = false) {
       S.mode = 'supabase';
       try {
         const data = await sbLoadData();
-        S.data = data || FALLBACK_SEED();
+        S.data = normalizeData(data);
         if (!data) await sbPutData(S.data);   // تهيئة الصف أول مرة
         LS.set(STORE.cache, { at: nowISO(), data: S.data });
       } catch {
@@ -476,8 +489,8 @@ async function loadData(silent = false) {
       S.mode = 'github';
       try {
         const data = await ghLoadData();
-        S.data = data;
-        LS.set(STORE.cache, { at: nowISO(), data });
+        S.data = normalizeData(data);
+        LS.set(STORE.cache, { at: nowISO(), data: S.data });
       } catch {
         const cached = LS.get(STORE.cache, null);
         if (cached?.data) {
@@ -1142,6 +1155,28 @@ function renderContracts() {
     (S.data?.settings?.designers || []).map(d => `<option value="${esc(d)}" ${S.filters.designer === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
 }
 
+/* ---------------------- أرشيف العقود المنتهية ---------------------- */
+function renderArchive() {
+  const wrap = $('#archiveList'), empty = $('#archiveEmpty');
+  if (!wrap) return;
+  const q = normAr($('#fltArchiveSearch')?.value || '');
+  const sel = $('#fltArchiveDesigner');
+  S.filtersArchive.designer = sel ? sel.value : (S.filtersArchive.designer || '');
+  if (sel) {
+    sel.innerHTML = '<option value="">كل المصممين</option>' +
+      (S.data?.settings?.designers || []).map(d => `<option value="${esc(d)}" ${S.filtersArchive.designer === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
+  }
+  const cs = (S.data?.contracts || []).filter(c => {
+    if (!['completed', 'closed'].includes(c.stage)) return false;
+    if (S.filtersArchive.designer && c.designer !== S.filtersArchive.designer) return false;
+    if (q && !normAr([c.id, c.customer?.name, c.customer?.phone].join(' ')).includes(q)) return false;
+    return true;
+  });
+  cs.sort((a, b) => (b.completedAt || b.createdAt || '') > (a.completedAt || a.createdAt || '') ? 1 : -1);
+  wrap.innerHTML = cs.map(contractCard).join('');
+  if (empty) empty.classList.toggle('hidden', cs.length > 0);
+}
+
 /* ---------------------- المستودع واللوجستيات ---------------------- */
 function whSection(title, icon, cls, items, note = '') {
   if (!items.length) return '';
@@ -1481,6 +1516,7 @@ function renderAll() {
   renderReport();
   renderStats();
   renderContracts();
+  renderArchive();
   renderWarehouse();
   renderSearch();
   renderNewTab();
@@ -1493,11 +1529,13 @@ function renderAll() {
 function switchTab(name) {
   S.tab = name;
   $$('.tabbtn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
-  ['contracts', 'new', 'warehouse', 'maintenance'].forEach(t => {
-    $('#tab-' + t).classList.toggle('hidden', t !== name);
-    $('#tab-' + t).classList.toggle('fade-in', t === name);
+  $$('section[id^="tab-"]').forEach(sec => {
+    const on = sec.id === 'tab-' + name;
+    sec.classList.toggle('hidden', !on);
+    sec.classList.toggle('fade-in', on);
   });
   if (name === 'maintenance') $('#mSearch').focus();
+  if (name === 'archive') renderArchive();
 }
 
 /* =====================================================================
@@ -2071,6 +2109,7 @@ async function actCloseTicket(id, tid) {
 function actOpenDetails(id) {
   const c = findContract(id); if (!c) return;
   S.curId = id;
+  const modal = $('#m-details'); if (modal) modal.dataset.id = id;
   renderDetails(c);
   openModal('m-details');
 }
@@ -2360,7 +2399,12 @@ function bindEvents() {
   if (e.target.closest('#btnTechExit')) { exitTechnicianPortal(); return; }
   if (e.target.closest('#btnReportPrint')) { actPrintReport(); return; }
   if (e.target.closest('#btnReportCSV')) { actExportCSV(); return; }
-  if (e.target.closest('#btnPrintContract')) { if (S.curId) actPrintContract(S.curId); return; }
+  if (e.target.closest('#btnPrintContract')) {
+    const id = S.curId || $('#m-details')?.dataset.id || '';
+    if (id) actPrintContract(id);
+    else toast('افتح تفاصيل العقد أولًا ثم اضغط طباعة العقد.', 'warn');
+    return;
+  }
     if (e.target.closest('#btnTechRefresh')) {
       loadData(true).then(() => { renderTechPortal(); toast(S.mode === 'github' ? 'تم جلب أحدث البيانات من المستودع.' : 'تم تحديث البيانات المحلية.', S.mode === 'offline' ? 'warn' : 'info'); });
       return;
@@ -2401,6 +2445,8 @@ function bindEvents() {
   $('#fltSearch').addEventListener('input', (e) => { S.filters.q = e.target.value; renderContracts(); });
   $('#fltStage').addEventListener('change', (e) => { S.filters.stage = e.target.value; renderStats(); renderContracts(); });
   $('#fltDesigner').addEventListener('change', (e) => { S.filters.designer = e.target.value; renderContracts(); });
+  $('#fltArchiveSearch')?.addEventListener('input', () => renderArchive());
+  $('#fltArchiveDesigner')?.addEventListener('change', () => renderArchive());
   $('#mSearch').addEventListener('input', () => renderSearch());
 
   // الهوية
@@ -2449,8 +2495,9 @@ function bindEvents() {
     S.lastAutoRefresh = Date.now();
     try {
       if (S.mode === 'supabase' && S.sbSession?.access_token) {
-        const fresh = await sbLoadData();
-        if (fresh && JSON.stringify(fresh.meta?.lastUpdated) !== JSON.stringify(S.data?.meta?.lastUpdated)) {
+        const raw = await sbLoadData();
+        const fresh = normalizeData(raw);
+        if (raw && JSON.stringify(fresh.meta?.lastUpdated) !== JSON.stringify(S.data?.meta?.lastUpdated)) {
           S.data = fresh; renderAll(); toast('تم تحديث البيانات من السحابة.', 'info');
         }
       } else if (S.mode === 'github' && ghCfgReady()) {
@@ -2488,8 +2535,7 @@ function bindEvents() {
 
   // بلا جلسة: أظهر شاشة الدخول السحابي.
   await loadData(true);
-/** طباعة عقد رسمي مطابق لنموذج الشركة مع ملء تلقائي للبيانات */
-renderAll();
+  renderAll();
   openOnboard(sbReady() ? 'login' : 'role');
 })();
 
