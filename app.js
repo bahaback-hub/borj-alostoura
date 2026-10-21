@@ -846,6 +846,198 @@ function actExportCSV() {
   toast(`تم تصدير ${cs.length} عقدًا إلى ملف CSV.`, 'ok');
 }
 
+/* ---------------------- طباعة عقد الاتفاق الرسمي ---------------------- */
+/* نموذج رسمي فارغ: يُطبع ببيانات الشركة والشروط والتوقيعات فقط.
+   بيانات العميل والطلب والمبالغ يتركها المصمم فارغة ويكتبها يدويًا،
+   ويمكنه كذلك الكتابة داخل الحقول في نافذة المعاينة قبل الطباعة. */
+function actPrintContract(id) {
+  const c = findContract(id);
+  if (!c) { toast('عقد غير موجود', 'err'); return; }
+
+  const today = new Date().toLocaleDateString('en-GB').replace(/\//g, ' / ');
+
+  const html = `<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="utf-8">
+<title>عقد اتفاق - ${esc(c.id)}</title>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;font-family:Cairo,Arial,sans-serif}
+  body{background:#eceff1;color:#000;padding:10mm;direction:rtl}
+  .toolbar{position:fixed;top:0;right:0;left:0;background:#111827;color:#fff;padding:8px 16px;display:flex;gap:10px;justify-content:center;align-items:center;z-index:99}
+  .toolbar button{font-family:Cairo,sans-serif;font-weight:700;font-size:14px;padding:7px 22px;border:0;border-radius:8px;cursor:pointer;background:#d4af37;color:#111}
+  .toolbar button.alt{background:#374151;color:#fff}
+  .toolbar .hint{font-family:Cairo,sans-serif;font-size:12px;color:#d1d5db}
+  .page{width:210mm;min-height:297mm;margin:16mm auto 0;background:#fff}
+  .main-container{border:2px solid #000;border-radius:12px;padding:10px;min-height:277mm;display:flex;flex-direction:column}
+  .header-table{width:100%;border-collapse:collapse;margin-bottom:8px}
+  .header-right{width:38%;text-align:right;font-size:13px;font-weight:bold;line-height:1.5}
+  .header-center{width:24%;text-align:center}
+  .logo-box{border:2px solid #000;border-radius:50px;padding:4px 15px;display:inline-block;font-weight:800;font-size:18px;margin-bottom:5px}
+  .title-box{border:2px solid #000;padding:3px 15px;display:inline-block;font-weight:bold;font-size:16px;border-radius:4px}
+  .header-left{width:38%;text-align:left;font-size:12px;font-weight:bold;line-height:1.6}
+  .contract-num-box{border:1px solid #000;display:inline-block;padding:2px 15px;font-weight:bold;margin-right:5px;min-width:70px;text-align:center}
+  .client-info-table{width:100%;border-collapse:collapse;margin-bottom:8px;border:1px solid #000}
+  .client-info-table td{padding:6px 10px;font-size:13px;font-weight:bold;border:1px solid #000;height:34px}
+  .items-table{width:100%;border-collapse:collapse;margin-bottom:8px;text-align:center}
+  .items-table th,.items-table td{border:1px solid #000;padding:5px 4px;font-size:12px;font-weight:bold;height:32px}
+  .items-table th{background:#f0f0f0;height:auto}
+  .summary-section{display:flex;border:1px solid #000;margin-bottom:8px}
+  .summary-right{width:55%;border-left:1px solid #000;padding:8px;font-size:11.5px;line-height:1.7;font-weight:bold}
+  .summary-left{width:45%;padding:6px 10px;font-size:12px;font-weight:bold}
+  .summary-row{display:flex;justify-content:space-between;gap:8px;margin-bottom:4px;border-bottom:1px dashed #ccc;padding-bottom:2px}
+  .summary-row:last-child{border-bottom:none}
+  .terms-box{border:1px solid #000;padding:8px 12px;font-size:10.5px;line-height:1.55;font-weight:700;margin-bottom:8px;background:#fafafa}
+  .terms-title{text-align:center;font-size:11.5px;margin-bottom:4px}
+  .terms-list{list-style-type:none}
+  .terms-list li{margin-bottom:3px}
+  .important-note{text-align:center;font-weight:800;font-size:11px;margin-top:4px;text-decoration:underline}
+  .signatures-table{width:100%;margin-top:5px;margin-bottom:8px}
+  .signatures-table td{width:50%;text-align:center;font-weight:bold;font-size:14px;padding:16px 0}
+  .bank-footer{border:1px solid #000;padding:6px;text-align:center;font-weight:bold;font-size:12px;border-radius:4px;background:#f9f9f9;margin-top:auto}
+  .edit{outline:none;display:block;min-height:1.2em;min-width:60px}
+  .edit:empty::before{content:"";display:inline-block}
+  body.edit-mode .edit{background:#fffbe6}
+  @page{size:A4;margin:8mm}
+  @media print{
+    body{background:#fff;padding:0}
+    body.edit-mode .edit{background:transparent}
+    .no-print{display:none !important}
+    .page{margin:0;width:auto;min-height:auto;background:#fff}
+    .main-container{min-height:281mm}
+  }
+</style>
+</head>
+<body>
+<div class="toolbar no-print">
+  <span class="hint">الحقول الفارغة تُملأ يدويًا — ويمكنك الكتابة داخلها هنا قبل الطباعة</span>
+  <button onclick="window.print()">طباعة</button>
+  <button class="alt" onclick="window.close()">إغلاق</button>
+</div>
+<div class="page">
+  <div class="main-container">
+
+    <table class="header-table">
+      <tr>
+        <td class="header-right">
+          <div>شركة برج الاسطورة للمطابخ فـ2ـرع</div>
+          <div style="font-size:11px;font-weight:normal;">المملكة العربية السعودية - المدينة المنورة - دوار الملك عبدالعزيز</div>
+        </td>
+        <td class="header-center">
+          <div class="logo-box">برج الأسطورة</div><br>
+          <div class="title-box">عقد اتفاق</div>
+        </td>
+        <td class="header-left">
+          <div>الرقم الضريبي : 311249227900003</div>
+          <div>سجل تجاري : 4650239901</div>
+          <div>جوال الإدارة : 0540322521</div>
+          <div>تاريخ الفاتورة: ${today}</div>
+          <div style="margin-top:3px;">رقم العقد: <span class="contract-num-box">${esc(c.id)}</span></div>
+        </td>
+      </tr>
+    </table>
+
+    <table class="client-info-table">
+      <tr>
+        <td style="width:50%;">العميل : <span class="edit" contenteditable="true"></span></td>
+        <td style="width:50%;">رقم الجوال: <span class="edit" contenteditable="true"></span></td>
+      </tr>
+      <tr>
+        <td colspan="2">العنوان : <span class="edit" contenteditable="true"></span></td>
+      </tr>
+    </table>
+
+    <table class="items-table">
+      <thead>
+        <tr>
+          <th style="width:4%;">#</th>
+          <th style="width:40%;">البيــــــــــــــــان</th>
+          <th style="width:8%;">الكمية</th>
+          <th style="width:12%;">السعر</th>
+          <th style="width:12%;">إجمالي</th>
+          <th style="width:12%;">الضريبة</th>
+          <th style="width:12%;">السعر شامل الضريبة</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td><span class="edit" contenteditable="true"></span></td>
+          <td><span class="edit" contenteditable="true"></span></td>
+          <td><span class="edit" contenteditable="true"></span></td>
+          <td><span class="edit" contenteditable="true"></span></td>
+          <td><span class="edit" contenteditable="true"></span></td>
+          <td><span class="edit" contenteditable="true"></span></td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td><span class="edit" contenteditable="true"></span></td>
+          <td><span class="edit" contenteditable="true"></span></td>
+          <td><span class="edit" contenteditable="true"></span></td>
+          <td><span class="edit" contenteditable="true"></span></td>
+          <td><span class="edit" contenteditable="true"></span></td>
+          <td><span class="edit" contenteditable="true"></span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="summary-section">
+      <div class="summary-right">
+        <b>الملاحظات والتفاصيل:</b>
+        <span class="edit" contenteditable="true" style="min-height:60px"></span>
+      </div>
+      <div class="summary-left">
+        <div class="summary-row"><span>اجمالي الفاتورة:</span><span class="edit" contenteditable="true" style="min-width:80px"></span></div>
+        <div class="summary-row"><span>المدفوع:</span><span class="edit" contenteditable="true" style="min-width:80px"></span></div>
+        <div class="summary-row"><span>المتبقي:</span><span class="edit" contenteditable="true" style="min-width:80px"></span></div>
+        <div class="summary-row"><span>الصافي قبل الضريبة:</span><span class="edit" contenteditable="true" style="min-width:80px"></span></div>
+        <div class="summary-row"><span>ضريبة القيمة المضافة 15%:</span><span class="edit" contenteditable="true" style="min-width:80px"></span></div>
+        <div class="summary-row" style="font-weight:800;font-size:13px;"><span>صافي الفاتورة شامل الضريبة:</span><span class="edit" contenteditable="true" style="min-width:80px"></span></div>
+      </div>
+    </div>
+
+    <div class="terms-box">
+      <div class="terms-title">تم بعون الله الاتفاق بين الطرفين أعلاه : شركة برج الاسطورة للمطابخ – طرف أول - والعميل الواضح بياناته أعلاه – طرف ثاني</div>
+      <ol class="terms-list">
+        <li>1- يدفع الطرف الثاني حال توقيع العقد مقدماً دفعة لا تقل عن خمسون بالمائة ( 50% ) وخمسون بالمائة ( 50% ) تصرف عند طلب نقل المطبخ أو أي عمل آخر من المصنع قبل التركيب.</li>
+        <li>2- كل قطعة يقل أمتارها عن المتر الطولي في المغاسل أو المطابخ تحسب على أنها متر طولي كامل .</li>
+        <li>3- إذا أراد الطرف الثاني تغيير العمل من ناحية نوع الديكور أو التصميم بعد أن تم تنفيذه فعليه أن يتحمل قيمة ما تم تنفيذه فلا يتعهد الطرف الأول بتسليم العمل المطلوب من قبل الطرف الثاني مدة (               ).</li>
+        <li>4- في حال تأخر الطرف الثاني عن استلام المنتج خلال 30 يوم من التاريخ المتفق عليه فإن الطرف الأول لا يعتبر ملزماً عن أي ضرر مهما كان شكله ونوعه يحصل بسبب التخزين ولا يجوز للطرف الثاني التصرف بالبضاعة المتفق عليها في هذا العقد بالبيع أو الرهن أو الهبة أو التنازل أو المشاركة إلا بعد سداد قيمتها بالكامل وإصدار سند مخالصة من الطرف الأول.</li>
+        <li>5- في حال طلب العميل تركيب المطبخ عليه مراجعه المعرض قبل التركيب بفترة لاتقل عن 20 يوم لاحق حجز موعد التركيب .</li>
+        <li>6- لا يتم تركيب المطبخ إلا بعد سداد المبلغ كاملا قبل التركيب 15 إلى 40 يوم.</li>
+        <li>7- الشركة غير مسؤولة عن أي صيانة للأجهزة الكهربائية أو الاكسسوارات أو أي صيانة للمطبخ دون الرجوع إلى المسؤول في الشركة ورقم الصيانة 0540322521 وفي حال صيانة المطبخ من قبل جهة غير تابعة للشركة فإن الضمان يعتبر ملغى.</li>
+      </ol>
+      <div style="display:flex;justify-content:space-around;font-size:10px;margin-top:4px;">
+        <span>ضمان صيانة المطبخ 15 عاماً ****</span>
+        <span>ضمان صيانة الاكسسوارات الأجهزة الكهربائية 2 سنة من تاريخ العقد... الضمان لا يشمل سوء الاستخدام,,,</span>
+      </div>
+      <div class="important-note">تركيب الرخام بعد تركيب المطبخ 5 أيام</div>
+    </div>
+
+    <table class="signatures-table">
+      <tr><td>توقيع البائع</td><td>توقيع المشتري</td></tr>
+    </table>
+
+    <div class="bank-footer">حـ / الراجحي 212608010777849 // حـ / البلاد 561136648110004 // شركة برج الأسطورة التجارية</div>
+
+  </div>
+</div>
+<script>
+  document.body.classList.add('edit-mode');
+</script>
+</body>
+</html>`;
+
+  const w = window.open('', '_blank');
+  if (!w) { toast('يرجى السماح بالنوافذ المنبثقة لطباعة العقد', 'warn'); return; }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+}
+
+
 function actPrintReport() {
   if (!canViewReport()) return toast('التقرير متاح للمدير العام فقط.', 'err');
   switchTab('contracts');
@@ -2152,9 +2344,10 @@ function bindEvents() {
     if (vapick) { startViewAs(vapick.dataset.varole, vapick.dataset.vaperson); return; }
 
     if (e.target.closest('#btnTechPortal')) { enterTechnicianPortal(); return; }
-    if (e.target.closest('#btnTechExit')) { exitTechnicianPortal(); return; }
-    if (e.target.closest('#btnReportPrint')) { actPrintReport(); return; }
-    if (e.target.closest('#btnReportCSV')) { actExportCSV(); return; }
+  if (e.target.closest('#btnTechExit')) { exitTechnicianPortal(); return; }
+  if (e.target.closest('#btnReportPrint')) { actPrintReport(); return; }
+  if (e.target.closest('#btnReportCSV')) { actExportCSV(); return; }
+  if (e.target.closest('#btnPrintContract')) { if (S.curId) actPrintContract(S.curId); return; }
     if (e.target.closest('#btnTechRefresh')) {
       loadData(true).then(() => { renderTechPortal(); toast(S.mode === 'github' ? 'تم جلب أحدث البيانات من المستودع.' : 'تم تحديث البيانات المحلية.', S.mode === 'offline' ? 'warn' : 'info'); });
       return;
@@ -2282,7 +2475,8 @@ function bindEvents() {
 
   // بلا جلسة: أظهر شاشة الدخول السحابي.
   await loadData(true);
-  renderAll();
+/** طباعة عقد رسمي مطابق لنموذج الشركة مع ملء تلقائي للبيانات */
+renderAll();
   openOnboard(sbReady() ? 'login' : 'role');
 })();
 

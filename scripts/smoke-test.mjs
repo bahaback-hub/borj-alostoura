@@ -39,6 +39,10 @@ for (const a of acts) {
   if (!switchCases.has(a)) problems.push(`data-act="${a}" بلا حالة معالجة في مستمع الأحداث.`);
 }
 
+// 4) زر طباعة العقد الرسمي موجود ودالته معرّفة
+if (!htmlIds.has('btnPrintContract')) problems.push('زر الطباعة #btnPrintContract غير موجود في index.html.');
+if (!/function actPrintContract\(/.test(js)) problems.push('دالة actPrintContract غير معرّفة في app.js.');
+
 if (problems.length) {
   console.error('❌ فشل فحص الدخان:');
   for (const p of problems) console.error('  - ' + p);
